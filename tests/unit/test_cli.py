@@ -46,6 +46,10 @@ def test_init_creates_home_config_secrets_and_db(env: dict[str, str], tmp_path: 
     conn = sqlite3.connect(home / "hackerblog.db")
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
     assert "ANTHROPIC_API_KEY" in out
+    starter = (home / "sites.toml").read_text(encoding="utf-8")
+    assert "backfill_limit" not in starter
+    assert "daily_token_budget" not in starter
+    assert "[notify]" not in starter
 
 
 def test_init_twice_keeps_config_and_secrets(env: dict[str, str], tmp_path: Path) -> None:

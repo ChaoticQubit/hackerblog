@@ -56,6 +56,25 @@ def test_valid_config_loads_with_defaults(tmp_path: Path) -> None:
     assert config.sites[1].notify is None
     assert config.fetch.min_delay_seconds == 2.0
     assert config.api.port == 8765
+    assert config.defaults.backfill_limit == 25
+    assert config.llm.daily_token_budget is None
+
+
+def test_backfill_and_budget_default_to_no_cap(tmp_path: Path) -> None:
+    text = valid_text(tmp_path).replace("backfill_limit = 25\n", "")
+    config, problems = load_config(write(tmp_path, text))
+    assert problems == []
+    assert config is not None
+    assert config.defaults.backfill_limit is None
+    assert config.sites[0].backfill_limit is None
+    assert config.llm.daily_token_budget is None
+
+
+def test_backfill_and_budget_accept_large_caps(tmp_path: Path) -> None:
+    text = valid_text(tmp_path).replace("backfill_limit = 25", "backfill_limit = 50000")
+    text = text.replace('provider = "anthropic"', 'provider = "anthropic"\ndaily_token_budget = 0')
+    _, problems = load_config(write(tmp_path, text))
+    assert [p.location for p in problems] == ["llm.daily_token_budget"]
 
 
 def test_unknown_key_is_reported_with_line(tmp_path: Path) -> None:
@@ -68,7 +87,7 @@ def test_unknown_key_is_reported_with_line(tmp_path: Path) -> None:
 
 
 def test_all_problems_reported_at_once(tmp_path: Path) -> None:
-    text = valid_text(tmp_path).replace("backfill_limit = 25", "backfill_limit = 5000")
+    text = valid_text(tmp_path).replace("backfill_limit = 25", "backfill_limit = -1")
     text = text.replace('provider = "anthropic"', 'provider = "anthropic"\nmax_input_tokens = -1')
     _, problems = load_config(write(tmp_path, text))
     locations = sorted(p.location for p in problems)

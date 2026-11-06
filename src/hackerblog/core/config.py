@@ -89,7 +89,7 @@ class Defaults(StrictModel):
     """Values every site inherits unless it overrides them."""
 
     schedule: str = "daily"
-    backfill_limit: int = Field(default=25, ge=0, le=1000)
+    backfill_limit: int | None = Field(default=None, ge=0)
     notify: Notify = "digest"
     max_new_per_poll: int = Field(default=20, ge=1, le=200)
     enabled: bool = True
@@ -108,7 +108,7 @@ class SiteConfig(StrictModel):
     post_url_pattern: str | None = Field(default=None, max_length=200)
     tags: list[str] = Field(default_factory=list[str], max_length=20)
     schedule: str | None = None
-    backfill_limit: int | None = Field(default=None, ge=0, le=1000)
+    backfill_limit: int | None = Field(default=None, ge=0)
     notify: Notify | None = None
     max_new_per_poll: int | None = Field(default=None, ge=1, le=200)
     enabled: bool | None = None
@@ -134,7 +134,7 @@ class LLMConfig(StrictModel):
     notes_model: str | None = Field(default=None, min_length=1, max_length=200)
     lesson_model: str | None = Field(default=None, min_length=1, max_length=200)
     base_url: str | None = Field(default=None, max_length=2048)
-    daily_token_budget: int = Field(default=1_500_000, ge=1)
+    daily_token_budget: int | None = Field(default=None, ge=1)
     max_input_tokens: int = Field(default=24_000, ge=1000)
     request_timeout_seconds: int = Field(default=120, ge=1, le=3600)
 

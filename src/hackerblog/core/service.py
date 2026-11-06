@@ -49,7 +49,6 @@ def starter_config(output_dir: Path, provider: str) -> str:
             "",
             "[defaults]",
             'schedule = "daily"',
-            "backfill_limit = 25",
             'notify = "digest"',
             "",
             "[llm]",
@@ -57,9 +56,6 @@ def starter_config(output_dir: Path, provider: str) -> str:
             "",
             "[output]",
             f"dir = {json.dumps(str(output_dir))}",
-            "",
-            "[notify]",
-            'digest_time = "08:00"',
             "",
         ]
     )

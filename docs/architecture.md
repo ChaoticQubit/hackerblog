@@ -28,7 +28,7 @@ Inputs: the brief and the research files under `.crazyagent/context/` (tech stac
 20. [Observability](#20-observability)
 21. [Testing strategy](#21-testing-strategy)
 22. [v1 release slice and milestones](#22-v1-release-slice-and-milestones)
-23. [Open questions for the owner](#23-open-questions-for-the-owner)
+23. [Owner decisions](#23-owner-decisions)
 24. [Sources](#24-sources)
 
 ## 1. Summary of decisions
@@ -39,7 +39,7 @@ Inputs: the brief and the research files under `.crazyagent/context/` (tech stac
 - **The LLM never writes markup.** It returns JSON validated by Pydantic. Fixed, reviewed Jinja2 templates render the lesson with autoescape, nh3 sanitises Markdown fragments, and every lesson ships with a hash-pinned Content-Security-Policy that blocks all network access.
 - **Every outbound URL passes one SSRF guard** that checks the resolved IP at connect time, so redirects and DNS rebinding cannot reach private addresses.
 - **Two ways to schedule, same code:** `hackerblog serve` runs APScheduler 3.11 in-process; `hackerblog poll` runs one full cycle and exits, for cron, launchd or systemd.
-- **Notifications point at the finished artefact.** Apprise sends a human message with the original URL and the lesson path or URL. A Standard Webhooks signed POST carries a stable JSON event for the host app.
+- **Notifications point at the finished artefact (deferred).** Owner decision 2026-11-06: notifications are out of the current build; milestone M3 runs after M4, and nothing in M1, M2 or M4 depends on them. When built, Apprise sends a human message with the original URL and the lesson path or URL. A Standard Webhooks signed POST carries a stable JSON event for the host app.
 
 ## 2. Goals and non-goals for v1
 
@@ -49,12 +49,12 @@ Inputs: the brief and the research files under `.crazyagent/context/` (tech stac
 |---|---|---|
 | G1 | The user lists blogs in `sites.toml` and nothing else is required to start | `hackerblog init`, edit file, `hackerblog poll` produces lessons |
 | G2 | Discover posts on sites with RSS/Atom, with only a sitemap, or with neither | Integration fixtures for all three pass |
-| G3 | Backfill each site's existing posts up to a per-site limit, newest first, without a notification flood | First poll of a 200-post site sends one `backfill.completed` message |
-| G4 | Detect new posts on a schedule (daily default) or on demand | A post added to a fixture site is processed and notified on the next poll |
+| G3 | Backfill each site's whole archive on first sync, newest first (an optional per-site `backfill_limit` caps it), without a notification flood | First poll of a 200-post site queues all 200; once M3 lands it sends one `backfill.completed` message |
+| G4 | Detect new posts on a schedule (daily default) or on demand | A post added to a fixture site is processed on the next poll |
 | G5 | Per post: summary, Markdown notes, and a single-file interactive HTML lesson with quiz and one game | Files exist, lesson works offline, quiz works by keyboard |
-| G6 | Notify with source URL plus notes path and lesson path or URL | Apprise message and webhook payload contain all of them |
+| G6 | Notify with source URL plus notes path and lesson path or URL (deferred to M3, after M4) | Apprise message and webhook payload contain all of them |
 | G7 | Pluggable: library facade, HTTP API with OpenAPI, signed webhook | A host app can drive every CLI capability over HTTP |
-| G8 | Bounded cost: process each post once, cache by content hash, daily token budget | Re-running a poll costs zero tokens |
+| G8 | No wasted cost: process each post once and cache by content hash; an optional daily token budget, off by default | Re-running a poll costs zero tokens |
 | G9 | Safe by default against hostile blog content and hostile URLs | Threat model mitigations each have a test |
 
 ### Non-goals for v1
@@ -66,7 +66,7 @@ Inputs: the brief and the research files under `.crazyagent/context/` (tech stac
 | JavaScript-rendered sites (Playwright) | 150 MB of browsers for a minority of sites | v1.1 as the `hackerblog[browser]` extra |
 | WebSub push | Daily polling meets the brief; push needs a public callback URL | When a user needs sub-hour latency |
 | Spaced-repetition review queue across posts | Needs persistent quiz state and a UI | v1.2 with the Vue UI |
-| Provider batch APIs for backfill | Agno does not wrap them; the daily budget already bounds cost | If backfill cost becomes a complaint |
+| Provider batch APIs for backfill | Agno does not wrap them; the content-hash cache already stops repeat spend | If backfill cost becomes a complaint |
 | Multi-user, accounts, sharing, social features | Single local user | Not planned |
 | Windows support | `fcntl` file locks and launchd/systemd scheduling | On request |
 | Audio or video overviews | Competitor research: add only if users ask | On request |
@@ -397,7 +397,7 @@ Top level:
 | `[defaults]` | table | see below | Values every site inherits. |
 | `[llm]` | table | see below | Provider and models. |
 | `[output]` | table | see below | Where files go. |
-| `[notify]` | table | see below | Delivery settings. |
+| `[notify]` | table | see below | Delivery settings. Optional and unused until M3 (notifications are deferred). |
 | `[fetch]` | table | see below | Politeness and network policy. |
 | `[api]` | table | see below | Service bind address. |
 | `[[site]]` | array of tables | at least zero | One per followed blog. |
@@ -407,7 +407,7 @@ Top level:
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `schedule` | string | `"daily"` | `"hourly"`, `"daily"`, `"weekly"` or a 5-field cron expression. Daily runs at `notify.digest_time` minus 30 minutes, with a per-site jitter of 0 to 20 minutes derived from the slug. |
-| `backfill_limit` | int 0..1000 | `25` | How many existing posts to process on first sync, newest first. `0` records existing posts as seen and processes only new ones. |
+| `backfill_limit` | int >= 0, or unset | unset (no cap) | How many existing posts to process on first sync, newest first. Unset processes the whole archive. `0` records existing posts as seen and processes only new ones. |
 | `notify` | `"instant"`, `"digest"`, `"off"` | `"digest"` | How Apprise reports this site's new posts. The webhook always receives every event. |
 | `max_new_per_poll` | int 1..200 | `20` | Cap on posts queued from one poll of one site, so a site that republishes its archive cannot flood the queue. |
 | `enabled` | bool | `true` | Disabled sites are skipped by polls. |
@@ -433,7 +433,7 @@ Top level:
 | `notes_model` | string | `"claude-haiku-5-5"` for anthropic, required otherwise | Model for the digest stage (summary, notes, glossary). |
 | `lesson_model` | string | `"claude-sonnet-5-5"` for anthropic, required otherwise | Model for lesson, quiz and `ask`. |
 | `base_url` | URL | required for `openai_compatible`, default `http://127.0.0.1:11434/v1` for `ollama` | Endpoint for OpenAI-compatible servers. |
-| `daily_token_budget` | int | `1500000` | Input plus output tokens per local calendar day across all stages. |
+| `daily_token_budget` | int >= 1, or unset | unset (no cap) | Optional cap on input plus output tokens per local calendar day across all stages. |
 | `max_input_tokens` | int | `24000` | Post text is cut at a paragraph boundary to fit; the digest records `truncated: true`. |
 | `request_timeout_seconds` | int | `120` | Per LLM call. |
 
@@ -479,14 +479,12 @@ version = 1
 
 [defaults]
 schedule = "daily"
-backfill_limit = 25
 notify = "digest"
 
 [llm]
 provider = "anthropic"
 notes_model = "claude-haiku-5-5"
 lesson_model = "claude-sonnet-5-5"
-daily_token_budget = 1500000
 
 [output]
 dir = "~/HackerBlog"
@@ -580,10 +578,10 @@ Dedup order (misbehaving servers send a new ETag every time, so all three are ne
 
 ### 8.5 New versus backfill
 
-- A site's first successful discovery runs in **backfill mode**: every candidate is inserted with `origin = 'backfill'`. The newest `backfill_limit` get process jobs; the rest are inserted as `skipped` with reason `backfill_limit`. If the site has a sitemap, it is enumerated too so older posts are known. No per-post Apprise messages; one `backfill.completed` event when the last backfill job finishes.
-- After that, candidates not already known are `origin = 'new'`, capped at `max_new_per_poll` per poll (extra ones wait for the next poll), and produce notifications.
+- A site's first successful discovery runs in **backfill mode**: every candidate is inserted with `origin = 'backfill'`. All of them get process jobs, newest first. Only when the site sets `backfill_limit` do the newest `backfill_limit` get jobs and the rest go in as `skipped` with reason `backfill_limit`. If the site has a sitemap, it is enumerated too so older posts are known. No per-post notifications; once M3 lands, one `backfill.completed` event when the last backfill job finishes.
+- After that, candidates not already known are `origin = 'new'`, capped at `max_new_per_poll` per poll (extra ones wait for the next poll), and produce notifications once M3 lands.
 - `hackerblog backfill SITE --limit N` moves the newest `N` posts that are `skipped` with reason `backfill_limit` back to `queued`.
-- `hackerblog process URL` inserts `origin = 'manual'`, notifies instantly, and works for URLs outside followed sites (site `adhoc`).
+- `hackerblog process URL` inserts `origin = 'manual'` (notified instantly once M3 lands) and works for URLs outside followed sites (site `adhoc`).
 
 ## 9. Post lifecycle
 
@@ -603,7 +601,7 @@ stateDiagram-v2
     extracted --> rendering : cache hit
     generating --> rendering : digest and lesson validated
     generating --> failed : provider error or invalid output
-    generating --> queued : daily token budget reached
+    generating --> queued : optional daily token budget reached
     rendering --> ready : files written, event stored
     failed --> queued : automatic retry with backoff
     failed --> dead : attempts exhausted
@@ -613,7 +611,7 @@ stateDiagram-v2
     ready --> [*]
 ```
 
-Retry backoff for `process_post` jobs: 1 min, 5 min, 30 min, 2 h, 12 h; `dead` after 5 attempts, which emits `post.failed`. A budget stop is not a failure: the job returns to `queued` with `run_after` set to the next local midnight and its attempt count unchanged.
+Retry backoff for `process_post` jobs: 1 min, 5 min, 30 min, 2 h, 12 h; `dead` after 5 attempts, which emits `post.failed`. A budget stop (only when `daily_token_budget` is set) is not a failure: the job returns to `queued` with `run_after` set to the next local midnight and its attempt count unchanged.
 
 Reading status, set by the user:
 
@@ -1041,7 +1039,8 @@ A blog post is attacker-controlled text. Layers, from strongest:
 
 ### 11.6 Token budget and cache
 
-- **Estimate before the call:** `len(text) / 4` tokens. If the estimate plus the stage's max output would cross `daily_token_budget` for today, the job is deferred to the next local midnight (section 9). `status` shows `budget: exhausted until 00:00`.
+- **Budget is optional:** `daily_token_budget` is unset by default (owner decision 2026-11-06), so there is no daily cap and a backfill runs the whole archive in one go. Usage is still recorded, so `status` shows tokens per day.
+- **Estimate before the call, when a budget is set:** `len(text) / 4` tokens. If the estimate plus the stage's max output would cross `daily_token_budget` for today, the job is deferred to the next local midnight (section 9). `status` shows `budget: exhausted until 00:00`.
 - **Record after the call:** actual input and output tokens from the Agno run metrics are added to `llm_usage`.
 - **Cache key:** `sha256(stage | model | prompt_version | schema_version | content_hash)`, plus the digest's hash for the lesson stage. A hit costs zero tokens. Re-polling, re-rendering after a template change, and the same article cross-posted on two sites all hit the cache.
 - **Truncation:** text over `max_input_tokens` is cut at the last paragraph boundary before the limit; `posts.truncated = 1` and the lesson header says "Based on the first part of a long post".
@@ -1131,13 +1130,15 @@ The `sandbox` directive without `allow-same-origin` gives the page an opaque ori
 
 ## 14. Notifications and the webhook event
 
+Deferred (owner decision 2026-11-06): this section is out of the current build. Milestone M3 runs after M4, the `[notify]` config section stays optional and unused until then, and M1, M2 and M4 must not depend on anything here. The design below stands for when M3 is built.
+
 ### 14.1 Events
 
 | Type | When | Webhook | Apprise |
 |---|---|---|---|
 | `post.processed` | A post reaches `ready` | Always | `origin=new` or `manual`: instant or digest per site setting. `origin=backfill`: never per post |
 | `post.failed` | A process job goes `dead` | Always | Listed in the next digest |
-| `backfill.completed` | The last backfill job of a site finishes | Always | One message: "Backfill of PortSwigger Research done: 25 lessons ready" |
+| `backfill.completed` | The last backfill job of a site finishes | Always | One message: "Backfill of PortSwigger Research done: 87 lessons ready" |
 | `site.unhealthy` | `consecutive_failures` reaches `unhealthy_after_failures` | Always | Instant, once until recovery |
 | `site.recovered` | A poll succeeds after `site.unhealthy` | Always | Instant |
 
@@ -1262,7 +1263,7 @@ Typer settings: `no_args_is_help=True`, `pretty_exceptions_enable=False` (traceb
 | 4 | `not_found` | Unknown site slug, post id, job id or event id. |
 | 5 | `partial` | Some targets failed and some succeeded (for example 1 of 12 sites unreachable). |
 | 6 | `failed` | Every target failed. |
-| 7 | `budget` | Work stopped because the daily token budget is reached; jobs stay queued. |
+| 7 | `budget` | Work stopped because the optional daily token budget is reached; jobs stay queued. |
 | 8 | `locked` | Another `poll` or `backfill` holds the lock, and `--wait` was not given. |
 | 9 | `blocked` | URL refused by the SSRF guard, or by robots.txt. |
 | 10 | `llm_auth` | Provider key missing or rejected, or model not found. |
@@ -1282,7 +1283,7 @@ Create the home folder, a starter config, a secrets file and the database.
 | `--provider [anthropic\|openai\|openai_compatible\|ollama]` | `anthropic` | Written into `[llm]`. |
 | `--force` | off | Overwrite an existing `sites.toml` (needs `--yes` without a TTY). The database and secrets are never overwritten. |
 
-Behaviour: creates `$HACKERBLOG_HOME` (`0700`), `sites.toml` with `version = 1`, `[defaults]`, `[llm]`, `[output]`, `[notify]` and no sites, `secrets.env` (`0600`) with a generated `HACKERBLOG_API_TOKEN` and `HACKERBLOG_WEBHOOK_SECRET` and an empty line for the provider key, then applies migrations. Prints the paths and the next steps (`set ANTHROPIC_API_KEY in secrets.env`, `hackerblog sites add URL`). Exit 0, or 3 if the home exists with unsafe permissions.
+Behaviour: creates `$HACKERBLOG_HOME` (`0700`), `sites.toml` with `version = 1`, `[defaults]`, `[llm]`, `[output]` and no sites, `secrets.env` (`0600`) with a generated `HACKERBLOG_API_TOKEN` and `HACKERBLOG_WEBHOOK_SECRET` and an empty line for the provider key, then applies migrations. Prints the paths and the next steps (`set ANTHROPIC_API_KEY in secrets.env`, `hackerblog sites add URL`). Exit 0, or 3 if the home exists with unsafe permissions.
 
 #### `hackerblog check`
 
@@ -1334,7 +1335,7 @@ Skips outlines whose URL is already configured. Exit 0, or 5 if some outlines we
 
 #### `hackerblog poll`
 
-One discovery cycle, then process queued work until the queue is empty or the budget is reached. This is the command for cron and launchd.
+One discovery cycle, then process queued work until the queue is empty or the optional daily budget is reached. This is the command for cron and launchd.
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -1345,20 +1346,20 @@ One discovery cycle, then process queued work until the queue is empty or the bu
 | `--wait` | off | Wait for the lock instead of exiting 8. |
 | `--json` | off | |
 
-Output: per site `portswigger-net-research  feed  304 not modified` or `+2 new`, then a processing progress line per post (`[1/3] Smashing the state machine ... ready (12.4k tokens)`), then a summary `2 sites polled, 3 new, 3 processed, 0 failed, tokens today 41k/1.5M`. Exit 0, 5, 6, 7, 8 or 10.
+Output: per site `portswigger-net-research  feed  304 not modified` or `+2 new`, then a processing progress line per post (`[1/3] Smashing the state machine ... ready (12.4k tokens)`), then a summary `2 sites polled, 3 new, 3 processed, 0 failed, tokens today 41k` (`41k/2M` when a daily budget is set). Exit 0, 5, 6, 7, 8 or 10.
 
 #### `hackerblog backfill SLUG`
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--limit INT` | site `backfill_limit` | Total number of the site's newest posts that should be processed; already processed posts count toward it. |
+| `--limit INT` | site `backfill_limit`, else no cap | Total number of the site's newest posts that should be processed; already processed posts count toward it. |
 | `--since DATE` | none | Only posts published on or after `YYYY-MM-DD`. |
 | `--no-process` | off | Queue only. |
 | `--dry-run` | off | Print the posts that would be queued and a token estimate. |
 | `--wait` | off | As in `poll`. |
 | `--json` | off | |
 
-Runs discovery for the site first (including the sitemap), then re-queues `skipped` posts with reason `backfill_limit` up to the limit. Prints an estimate before processing: `Queuing 40 posts, estimated 1.6M tokens; today's remaining budget 1.2M, the rest continues tomorrow.` Exit as `poll`.
+Runs discovery for the site first (including the sitemap), then re-queues `skipped` posts with reason `backfill_limit` up to the limit. Prints an estimate before processing: `Queuing 40 posts, estimated 1.6M tokens.` When `daily_token_budget` is set it adds `today's remaining budget 1.2M, the rest continues tomorrow.` Exit as `poll`.
 
 #### `hackerblog process URL`
 
@@ -1477,7 +1478,7 @@ Send a test event (`type` `post.processed` with `data.test = true` and a fixed s
 
 #### `hackerblog status`
 
-Option `--json`. Prints: version, config path, database path and size, mode (`serve` heartbeat seen within 2 minutes or `cron`), last poll run and its result, next scheduled runs, queue counts by state, tokens used today against the budget, and per-site health for sites that are failing. Exit 0, or 5 if any site is unhealthy or any job is dead (so cron and monitoring can alert on it).
+Option `--json`. Prints: version, config path, database path and size, mode (`serve` heartbeat seen within 2 minutes or `cron`), last poll run and its result, next scheduled runs, queue counts by state, tokens used today (against the budget when one is set), and per-site health for sites that are failing. Exit 0, or 5 if any site is unhealthy or any job is dead (so cron and monitoring can alert on it).
 
 #### `hackerblog prune`
 
@@ -1520,14 +1521,13 @@ $ hackerblog check
 OK: 2 sites, provider anthropic (claude-haiku-5-5, claude-sonnet-5-5)
 
 $ hackerblog poll
-portswigger-net-research  feed      first sync: 87 posts found, 25 queued (backfill), 62 skipped (backfill_limit)
+portswigger-net-research  feed      first sync: 87 posts found, 87 queued (backfill)
 example-org-writing       sitemap   first sync: 14 posts found, 14 queued (backfill)
-[1/39] Smashing the state machine ............ ready  14.2k tokens
-[2/39] Listen to the whispers ................ ready  11.8k tokens
+[1/101] Smashing the state machine ............ ready  14.2k tokens
+[2/101] Listen to the whispers ................ ready  11.8k tokens
 ...
-[39/39] Notes on HTTP/2 desync ............... ready  9.1k tokens
-2 sites polled, 101 found, 39 processed, 0 failed. Tokens today 512k/1.5M
-Backfill complete messages sent to 1 Apprise target
+[101/101] Notes on HTTP/2 desync ............... ready  9.1k tokens
+2 sites polled, 101 found, 101 processed, 0 failed. Tokens today 1.3M
 
 $ hackerblog posts list --site portswigger-net-research --limit 3
 ID   DATE        SITE                       TITLE                             READING
@@ -1712,7 +1712,7 @@ Per the project rules: unit tests first (TDD), integration and e2e against real 
 |---|---|---|---|
 | Unit | Pure functions and single modules: `canonicalize`, post heuristic, link diff, sitemap and OPML parsing, robots decisions, rate-limit timing, SSRF address classification, slugs and path containment, Pydantic bounds and post-validation, grounding, budget maths, cache keys, job claim and backoff, template rendering and CSP hashes, nh3 output, webhook signing against the Standard Webhooks test vector, text cleaning, CLI argument parsing and exit-code mapping, import-boundary rules | A real temporary SQLite file (cheap and exact, so no DB mock) and saved real-world feed and page fixtures | One fake implementing the three `agno_backend` functions with canned valid outputs, because a live model is non-deterministic and offline runs are impossible. No mocks elsewhere |
 | Integration | One capability at a time against real services: discovery for a feed site, a sitemap-only site and a no-feed site; conditional GET and 304; robots disallow; 429 with `Retry-After`; redirect to a private IP refused; gzip bomb cut off; full `process_post` with a real model; webhook delivery and retry to a real local receiver verifying signatures; Apprise to a local `json://` receiver; FTS search; API routes with auth and Trusted Host | A local fixture web server (uvicorn serving `tests/integration/fixtures/`), allowed through `allow_private_hosts`; Ollama in CI with `llama3.2:3b` pinned by digest; a local webhook receiver | None |
-| End-to-end | The user flow: `hackerblog init`, `sites add` a fixture blog, `serve` running, `poll` through the API, webhook received and verified, open the lesson in Playwright Chromium, complete the quiz and game by keyboard, assert zero console errors, zero CSP violations and zero network requests from the lesson; then publish a new fixture post, poll again, assert exactly one new `post.processed` and one Apprise message, and `hackerblog quiz` marks it learned | Real CLI subprocesses, real `hackerblog serve`, Ollama, Playwright | None |
+| End-to-end | The user flow: `hackerblog init`, `sites add` a fixture blog, `serve` running, `poll` through the API, open the lesson in Playwright Chromium, complete the quiz and game by keyboard, assert zero console errors, zero CSP violations and zero network requests from the lesson; then publish a new fixture post, poll again, assert exactly one new `post.processed` event, and `hackerblog quiz` marks it learned. The webhook and Apprise steps join the flow when M3 lands | Real CLI subprocesses, real `hackerblog serve`, Ollama, Playwright | None |
 | Smoke | The running service: `GET /health?deep=true` is 200 with scheduler and worker running; an authenticated `GET /v1/status` is 200 | Booted service | None |
 
 Live-provider check: a separate CI job on the main branch only (never on pull requests from forks) runs the `process_post` integration test against Anthropic with a repository secret, to catch provider API drift. It is not a merge gate.
@@ -1735,20 +1735,21 @@ Trunk-based: each milestone lands as several small pull requests to `main`. Ther
 |---|---|---|
 | M0 Skeleton | `uv` project, package layout, config models and loader, `init`, `check` (offline), migrations, `paths`, logging and redaction, import-boundary and no-LiteLLM checks, CI stages 1 to 3 | `hackerblog init && hackerblog check` works on a clean machine; unit tests green |
 | M1 Discovery | SSRF guard and fetcher, robots, rate limits, conditional GET, resolve, feeds, sitemaps, link diff, OPML, dedup, backfill and new logic, `sites list/show/add/import-opml`, `poll --no-process`, `posts list/show`, `check --online`, integration fixtures | The three fixture site types are discovered; second poll is all 304; SSRF tests pass |
-| M2 Processing | Extraction, jobs and worker, Agno backend, schemas, prompts, grounding, budget and cache, notes and lesson templates with CSP, `index.html`, `process`, `work`, `backfill`, `regenerate`, `render`, `open`, `quiz`, `search` | A fixture post becomes a valid, accessible, offline lesson; re-poll costs zero tokens; XSS tests pass |
-| M3 Notifications | Events, webhook with Standard Webhooks signing and retries, Apprise instant and digest, backfill and site health events, `events list/redeliver`, `notify test`, `status` | Integration tests for webhook and Apprise pass; first sync sends one backfill message |
-| M4 Service | FastAPI app, auth, Trusted Host, every route in section 16, `/files` with headers, APScheduler and in-process worker, `serve`, `schedule show`, `ask` | Smoke and e2e green; nuclei clean |
-| M5 Release v1.0 | Security review against section 19, README with quick start, `CHANGELOG` generation, tag | Owner runs the example session in section 15.4 on their own blogs |
+| M2 Processing | Extraction, jobs and worker, Agno backend, schemas, prompts, grounding, optional budget and cache, notes and lesson templates with CSP, `index.html`, `process`, `work`, `backfill`, `regenerate`, `render`, `open`, `quiz`, `search` | A fixture post becomes a valid, accessible, offline lesson; re-poll costs zero tokens; XSS tests pass |
+| M4 Service | FastAPI app, auth, Trusted Host, every route in section 16 except `/v1/events*`, `/files` with headers, APScheduler and in-process worker, `serve`, `schedule show`, `status`, `ask` | Smoke and e2e green; nuclei clean |
+| M3 Notifications (deferred, after M4, out of the current build) | Events, webhook with Standard Webhooks signing and retries, Apprise instant and digest, backfill and site health events, `events list/redeliver`, `/v1/events*`, `notify test` | Integration tests for webhook and Apprise pass; first sync sends one backfill message |
+| M5 Release v1.0 (after M4; M3 only if the owner pulls it back in) | Security review against section 19, README with quick start, `CHANGELOG` generation, tag | Owner runs the example session in section 15.4 on their own blogs |
 
 After v1: v1.1 adds the `mcp` extra (tools `list_posts`, `get_post`, `search_notes`, `process_url`, with write tools behind explicit consent) and the `browser` extra (Playwright fetch per site); v1.2 adds the Vue reading UI and the cross-post spaced-review queue.
 
-## 23. Open questions for the owner
+## 23. Owner decisions
 
-Each has a default already used in this document; nothing is blocked.
+The owner answered the open questions on 2026-11-06. The rest of this document follows these answers.
 
-1. **Notification channel.** Apprise supports all of them, but which one should the docs and the e2e test target first? Default: ntfy (self-hostable phone push).
-2. **Backfill size and spend.** Defaults are 25 posts per site and 1.5M tokens per day. Is that the right ceiling for your blogs, or do you want whole archives processed over several days?
-3. **MCP timing.** Default: MCP ships in v1.1, after the HTTP API. Should it move into v1 because the larger app will be an AI agent host?
+1. **Backfill and spend.** The first sync processes each site's whole archive: `backfill_limit` is unset by default and stays available as an optional per-site cap. The daily token budget is off by default; `daily_token_budget` is an optional setting and unset means no cap. The content-hash cache stays, so re-polls still cost zero tokens.
+2. **Notifications.** Deferred. Milestone M3 moves after M4 and is out of the current build. Nothing in M1, M2 or M4 may depend on notifications, and the `[notify]` config section stays optional and unused. The channel question (default ntfy) is reopened when M3 is scheduled.
+3. **MCP timing.** MCP stays in v1.1, after the HTTP API.
+4. **Agent harness.** All leads building HackerBlog use Claude Code.
 
 ## 24. Sources
 

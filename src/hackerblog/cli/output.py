@@ -44,3 +44,15 @@ def emit_error(
     sys.stderr.write(f"Error: {clean(error.message)}\n")
     if error.hint:
         sys.stderr.write(f"Try: {clean(error.hint)}\n")
+
+
+def table(headers: list[str], rows: list[list[str]]) -> None:
+    """Print rows as left-aligned columns under headers, each cell cleaned first."""
+    cells = [[clean(cell) for cell in row] for row in [headers, *rows]]
+    assert all(len(row) == len(headers) for row in cells)
+    widths = [max(len(row[index]) for row in cells) for index in range(len(headers))]
+    for row in cells:
+        sys.stdout.write(
+            "  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True)).rstrip()
+            + "\n"
+        )

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>
+    Example   Security Blog &amp; Notes
+  </title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="alternate" type="application/rss+xml" title="RSS" href="/feed.xml">
+  <link rel="alternate" type="application/json" href="/wp-json/wp/v2/pages/2">
+  <link rel="Alternate" type="application/atom+xml" href="https://blog.example.com/atom.xml">
+  <link rel="alternate" type="application/feed+json" href="feed.json">
+  <link rel="alternate" hreflang="de" href="/de/">
+  <link rel="alternate" type="application/rss+xml" href="/feed.xml">
+</head>
+<body>
+  <nav><a href="/">Home</a> <a href="/about/">About</a> <a href="/tag/xss/">xss</a></nav>
+  <main>
+    <a href="/2024/05/breaking-xxe/?utm_source=home#top">Breaking XXE</a>
+    <a href="https://blog.example.com/2024/05/breaking-xxe/">Breaking XXE again</a>
+    <a href="posts/a-long-enough-slug">Relative post</a>
+    <a href="mailto:me@example.com">Mail</a>
+    <a href="javascript:alert(1)">JS</a>
+    <a href="https://other.example.org/2024/01/elsewhere-post">Elsewhere</a>
+    <a>No href</a>
+    <a href="http://[::1">Broken</a>
+  </main>
+</body>
+</html>

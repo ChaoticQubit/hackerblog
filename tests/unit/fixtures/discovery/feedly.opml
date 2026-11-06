@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="1.0">
+  <head>
+    <title>Ada subscriptions in feedly Cloud</title>
+  </head>
+  <body>
+    <outline text="Security" title="Security">
+      <outline type="rss" text="PortSwigger Research" title="PortSwigger Research" xmlUrl="https://portswigger.net/research/rss" htmlUrl="https://portswigger.net/research"/>
+      <outline type="rss" text="Project Zero" title="Project Zero" xmlUrl="https://googleprojectzero.blogspot.com/feeds/posts/default"/>
+      <outline text="Nested folder">
+        <outline type="rss" text="The Cloudflare Blog" xmlUrl="https://blog.cloudflare.com/rss/" htmlUrl="https://blog.cloudflare.com/"/>
+      </outline>
+    </outline>
+    <outline type="rss" text="Gopher thing" title="Gopher thing" xmlUrl="gopher://old.example.com/feed"/>
+    <outline type="rss" text="Bad html, good feed" htmlUrl="ftp://x.example.com/" xmlUrl="https://y.example.com/feed"/>
+  </body>
+</opml>

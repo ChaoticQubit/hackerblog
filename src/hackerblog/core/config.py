@@ -19,6 +19,9 @@ OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
 SCHEDULE_WORDS = frozenset({"hourly", "daily", "weekly"})
 CRON_RANGES = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))
 CRON_FIELD = re.compile(r"^(\*|(\d+)(?:-(\d+))?)(?:/(\d+))?$")
+HOST_NAME = re.compile(
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+"
+)
 
 Notify = Literal["instant", "digest", "off"]
 Slug = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,47}$")]
@@ -107,6 +110,7 @@ class SiteConfig(StrictModel):
     sitemap: str | None = Field(default=None, max_length=2048)
     post_url_pattern: str | None = Field(default=None, max_length=200)
     tags: list[str] = Field(default_factory=list[str], max_length=20)
+    allowed_hosts: list[str] = Field(default_factory=list[str], max_length=20)
     schedule: str | None = None
     backfill_limit: int | None = Field(default=None, ge=0)
     notify: Notify | None = None
@@ -114,6 +118,15 @@ class SiteConfig(StrictModel):
     enabled: bool | None = None
 
     _pattern = field_validator("post_url_pattern")(_check_regex)
+
+    @field_validator("allowed_hosts")
+    @classmethod
+    def _hosts(cls, value: list[str]) -> list[str]:
+        hosts = [host.lower() for host in value]
+        for host in hosts:
+            if not HOST_NAME.fullmatch(host):
+                raise ValueError(f"allowed_hosts entry {host!r} must be a bare host name")
+        return hosts
 
     @field_validator("schedule")
     @classmethod

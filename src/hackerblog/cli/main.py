@@ -1,21 +1,27 @@
 """The `hackerblog` command line, a thin Typer adapter over hackerblog.core.service."""
 
+import asyncio
 import os
 import signal
 import sys
 import traceback
-from dataclasses import dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Literal
 
 import typer
 
 from hackerblog import __version__
-from hackerblog.cli.output import clean, emit_error, emit_json, say
+from hackerblog.cli.commands import posts as posts_commands
+from hackerblog.cli.commands import sites as sites_commands
+from hackerblog.cli.commands.sites import site_line
+from hackerblog.cli.output import clean, emit_json, say
+from hackerblog.cli.state import State, fail, get_state
 from hackerblog.core import service
+from hackerblog.core.discovery import service as discovery
 from hackerblog.core.errors import ExitCode, HackerBlogError
 from hackerblog.core.logging import setup_logging
-from hackerblog.core.paths import Paths, resolve_paths
+from hackerblog.core.paths import resolve_paths
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -27,14 +33,6 @@ app = typer.Typer(
 
 Provider = Literal["anthropic", "openai", "openai_compatible", "ollama"]
 JsonFlag = Annotated[bool, typer.Option("--json", help="Print one JSON document.")]
-
-
-@dataclass(frozen=True)
-class State:
-    """Global options shared by every command."""
-
-    paths: Paths
-    quiet: bool
 
 
 def _show_version(value: bool) -> None:
@@ -62,17 +60,6 @@ def main(
     ctx.obj = State(resolve_paths(home, config), quiet)
 
 
-def _state(ctx: typer.Context) -> State:
-    state = ctx.obj
-    assert isinstance(state, State)
-    return state
-
-
-def _fail(error: HackerBlogError, as_json: bool, extra: dict[str, object] | None = None) -> None:
-    emit_error(error, as_json, extra)
-    raise typer.Exit(int(error.code))
-
-
 @app.command()
 def init(
     ctx: typer.Context,
@@ -83,18 +70,18 @@ def init(
     as_json: JsonFlag = False,
 ) -> None:
     """Create the home folder, a starter sites.toml, secrets.env and the database."""
-    state = _state(ctx)
+    state = get_state(ctx)
     if force and state.paths.config.exists() and not yes:
         if not sys.stdin.isatty():
             usage = HackerBlogError(
                 ExitCode.USAGE, "--force would overwrite sites.toml", "Add --yes to confirm"
             )
-            _fail(usage, as_json)
+            fail(usage, as_json)
         typer.confirm(f"Overwrite {state.paths.config}?", abort=True)
     try:
         result = service.init_home(state.paths, output_dir, provider, force)
     except HackerBlogError as error:
-        _fail(error, as_json)
+        fail(error, as_json)
         return
     paths = result.paths
     if as_json:
@@ -126,9 +113,13 @@ def init(
 
 
 @app.command()
-def check(ctx: typer.Context, as_json: JsonFlag = False) -> None:
-    """Validate sites.toml and secrets without network access."""
-    state = _state(ctx)
+def check(
+    ctx: typer.Context,
+    online: Annotated[bool, typer.Option("--online", help="Also resolve every site.")] = False,
+    as_json: JsonFlag = False,
+) -> None:
+    """Validate sites.toml and secrets; --online also resolves sites, writing nothing."""
+    state = get_state(ctx)
     report = service.check(state.paths, os.environ)
     name = state.paths.config.name
     if report.code == ExitCode.CONFIG:
@@ -140,13 +131,17 @@ def check(ctx: typer.Context, as_json: JsonFlag = False) -> None:
                 for p in report.problems
             ]
             error = HackerBlogError(ExitCode.CONFIG, summary, f"Edit {state.paths.config}")
-            _fail(error, as_json, {"problems": problems})
+            fail(error, as_json, {"problems": problems})
         for problem in report.problems:
             say(problem.render(name))
         say(summary)
         raise typer.Exit(int(ExitCode.CONFIG))
+    resolved = asyncio.run(discovery.check_online(state.paths)) if online else []
+    if not as_json:
+        for item in resolved:
+            say(_online_line(item))
     if report.missing_key:
-        _fail(
+        fail(
             HackerBlogError(
                 ExitCode.LLM_AUTH,
                 f"{report.missing_key} is not set",
@@ -157,10 +152,80 @@ def check(ctx: typer.Context, as_json: JsonFlag = False) -> None:
     config = report.config
     assert config is not None
     models = f"{config.llm.notes_model}, {config.llm.lesson_model}"
+    unreachable = [item for item in resolved if item.error]
     if as_json:
-        emit_json({"sites": len(config.sites), "provider": config.llm.provider})
-        return
-    say(f"OK: {len(config.sites)} sites, provider {config.llm.provider} ({models})")
+        data: dict[str, object] = {"sites": len(config.sites), "provider": config.llm.provider}
+        if online:
+            data["online"] = [_online_json(item) for item in resolved]
+        emit_json(data, [f"{item.slug}: {item.error}" for item in unreachable])
+    elif unreachable:
+        say(f"{len(unreachable)} of {len(resolved)} sites unreachable")
+    else:
+        say(f"OK: {len(config.sites)} sites, provider {config.llm.provider} ({models})")
+    if unreachable:
+        raise typer.Exit(int(ExitCode.PARTIAL))
+
+
+def _online_line(item: discovery.OnlineResult) -> str:
+    if item.resolution is None:
+        return f"{item.slug}  unreachable: {item.error}"
+    found = item.resolution
+    source = found.feed_url or found.sitemap_url or "index page"
+    return f"{item.slug}  {found.method}  {source}"
+
+
+def _online_json(item: discovery.OnlineResult) -> dict[str, object]:
+    found = item.resolution
+    return {
+        "slug": item.slug,
+        "method": None if found is None else found.method,
+        "feed_url": None if found is None else found.feed_url,
+        "sitemap_url": None if found is None else found.sitemap_url,
+        "error": item.error,
+    }
+
+
+@app.command()
+def poll(
+    ctx: typer.Context,
+    site: Annotated[list[str] | None, typer.Option("--site", help="Repeatable.")] = None,
+    no_process: Annotated[
+        bool, typer.Option("--no-process", help="Discover and queue only.")
+    ] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Write nothing.")] = False,
+    wait: Annotated[bool, typer.Option("--wait", help="Wait for a running poll.")] = False,
+    as_json: JsonFlag = False,
+) -> None:
+    """Discover new posts on every enabled site and queue them for processing."""
+    state = get_state(ctx)
+    try:
+        report = asyncio.run(discovery.poll(state.paths, site or (), dry_run=dry_run, wait=wait))
+    except HackerBlogError as error:
+        fail(error, as_json)
+    failed = [result for result in report.results if result.error]
+    if as_json:
+        data = {
+            "poll_run_id": report.poll_run_id,
+            "dry_run": report.dry_run,
+            "sites_ok": len(report.results) - len(failed),
+            "sites_failed": len(failed),
+            "new_posts": report.new_posts,
+            "processed": 0,
+            "sites": [asdict(result) for result in report.results],
+        }
+        emit_json(data, [f"{result.slug}: {result.error}" for result in failed])
+    else:
+        for result in report.results:
+            say(site_line(result))
+        prefix = "dry run: " if report.dry_run else ""
+        count = len(report.results)
+        say(f"{prefix}{count} sites polled, {report.new_posts} new, {len(failed)} failed")
+    if report.code != ExitCode.OK:
+        raise typer.Exit(int(report.code))
+
+
+app.add_typer(sites_commands.app, name="sites")
+app.add_typer(posts_commands.app, name="posts")
 
 
 def _interrupted(signum: int, frame: object) -> None:

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Tips&nbsp;&amp;&nbsp;Tricks</title>
+    <link>https://blog.example/</link>
+    <item>
+      <title>Caf&eacute; notes&nbsp;&mdash; part&#160;1</title>
+      <link>https://blog.example/2026/cafe-notes-part-1/</link>
+      <guid>https://blog.example/2026/cafe-notes-part-1/</guid>
+    </item>
+    <item>
+      <title>Unknown &bogus; entity stays text</title>
+      <link>https://blog.example/2026/unknown-entity-stays-text/</link>
+    </item>
+  </channel>
+</rss>

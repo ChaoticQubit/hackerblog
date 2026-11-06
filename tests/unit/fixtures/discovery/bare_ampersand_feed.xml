@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Salt & Pepper</title>
+    <link>https://blog.example/</link>
+    <item>
+      <title>Cats & dogs & XML</title>
+      <link>https://blog.example/2026/cats-and-dogs/?a=1&b=2</link>
+    </item>
+  </channel>
+</rss>

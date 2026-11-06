@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Atom Blog</title>
+  <link href="https://atom.example.org/"/>
+  <updated>2024-06-02T12:00:00Z</updated>
+  <id>urn:uuid:60a76c80-d399-11d9-b93C-0003939e0af6</id>
+  <entry>
+    <title>Atom entry one</title>
+    <link rel="alternate" href="https://atom.example.org/posts/atom-entry-one"/>
+    <id>urn:uuid:1225c695-cfb8-4ebb-aaaa-80da344efa6a</id>
+    <updated>2024-06-02T12:00:00Z</updated>
+    <author><name>Grace Hopper</name></author>
+  </entry>
+  <entry>
+    <title>Atom entry two</title>
+    <link rel="alternate" href="https://atom.example.org/posts/atom-entry-two"/>
+    <id>urn:uuid:1225c695-cfb8-4ebb-aaaa-80da344efa6b</id>
+    <published>2024-05-30T23:15:00-02:00</published>
+    <updated>2024-05-31T09:00:00Z</updated>
+  </entry>
+</feed>

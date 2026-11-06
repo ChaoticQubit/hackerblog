@@ -1,0 +1,202 @@
+import fcntl
+import json
+import os
+import tomllib
+from pathlib import Path
+from typing import Any
+
+import pytest
+from typer.testing import CliRunner
+
+from hackerblog.cli.main import app
+
+runner = CliRunner()
+
+OPML = """<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head><title>Subscriptions</title></head>
+  <body>
+    <outline text="Security">
+      <outline type="rss" text="Alpha" title="Alpha Blog"
+               xmlUrl="https://alpha.example/feed.xml" htmlUrl="https://alpha.example/"/>
+      <outline type="rss" text="Beta" xmlUrl="https://beta.example/rss"/>
+      <outline type="rss" text="Bad" xmlUrl="ftp://bad.example/feed"/>
+      <outline type="rss" text="Local" xmlUrl="http://127.0.0.1/feed"/>
+    </outline>
+  </body>
+</opml>
+"""
+
+
+@pytest.fixture
+def env(tmp_path: Path) -> dict[str, str]:
+    values = {
+        "HOME": str(tmp_path),
+        "HACKERBLOG_HOME": str(tmp_path / "hb"),
+        "HACKERBLOG_CONFIG": "",
+        "ANTHROPIC_API_KEY": "",
+        "NO_COLOR": "1",
+    }
+    code, out = invoke(values, "init", "--output-dir", str(tmp_path / "out"))
+    assert code == 0, out
+    return values
+
+
+def invoke(env: dict[str, str], *args: str) -> tuple[int, str]:
+    result = runner.invoke(app, list(args), env=env)
+    return result.exit_code, result.output
+
+
+def config_path(env: dict[str, str]) -> Path:
+    return Path(env["HACKERBLOG_HOME"]) / "sites.toml"
+
+
+def sites_in(env: dict[str, str]) -> list[dict[str, object]]:
+    data = tomllib.loads(config_path(env).read_text(encoding="utf-8"))
+    return data.get("site", [])
+
+
+def data_of(out: str) -> Any:
+    document = json.loads(out)
+    assert document["ok"] is True
+    return document["data"]
+
+
+def test_add_appends_a_site_block_and_keeps_the_rest(env: dict[str, str]) -> None:
+    before = config_path(env).read_text(encoding="utf-8")
+    code, out = invoke(
+        env,
+        "sites",
+        "add",
+        "https://blog.example.com/writing/",
+        "--no-discover",
+        "--tag",
+        "web",
+        "--tag",
+        'say "hi"',
+        "--backfill-limit",
+        "0",
+    )
+    assert code == 0, out
+    assert "Added site blog-example-com-writing" in out
+    after = config_path(env).read_text(encoding="utf-8")
+    assert after.startswith(before)
+    assert sites_in(env) == [
+        {
+            "url": "https://blog.example.com/writing/",
+            "tags": ["web", 'say "hi"'],
+            "backfill_limit": 0,
+        }
+    ]
+
+
+def test_add_rejects_duplicates_with_config_exit(env: dict[str, str]) -> None:
+    assert invoke(env, "sites", "add", "https://a.example/", "--no-discover")[0] == 0
+    code, out = invoke(env, "sites", "add", "https://A.example", "--no-discover")
+    assert code == 3, out
+    assert "already followed" in out
+    assert len(sites_in(env)) == 1
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://127.0.0.1/", "http://169.254.169.254/latest/", "http://[::1]/", "ftp://x.example/"],
+)
+def test_add_refuses_unsafe_urls_with_blocked_exit(env: dict[str, str], url: str) -> None:
+    code, out = invoke(env, "sites", "add", url, "--no-discover", "--json")
+    assert code == 9, out
+    assert json.loads(out)["error"]["code"] == "blocked"
+    assert sites_in(env) == []
+
+
+def test_list_and_show_sites(env: dict[str, str]) -> None:
+    invoke(env, "sites", "add", "https://a.example/blog/", "--no-discover", "--name", "A")
+    code, out = invoke(env, "sites", "list", "--json")
+    assert code == 0, out
+    listed = data_of(out)
+    assert [item["slug"] for item in listed] == ["a-example-blog"]
+    code, out = invoke(env, "sites", "show", "a-example-blog", "--json")
+    assert code == 0, out
+    shown = data_of(out)
+    assert shown["name"] == "A"
+    assert shown["max_new_per_poll"] == 20
+    assert shown["health"] == "ok"
+    code, out = invoke(env, "sites", "show", "nope")
+    assert code == 4, out
+
+
+def test_import_opml_dry_run_then_real(env: dict[str, str], tmp_path: Path) -> None:
+    opml = tmp_path / "subs.opml"
+    opml.write_text(OPML, encoding="utf-8")
+    code, out = invoke(env, "sites", "import-opml", str(opml), "--dry-run", "--json")
+    assert code == 5, out
+    preview = data_of(out)
+    assert [item["url"] for item in preview["added"]] == [
+        "https://alpha.example/",
+        "https://beta.example/rss",
+    ]
+    assert len(preview["invalid"]) == 2
+    assert sites_in(env) == []
+    code, out = invoke(env, "sites", "import-opml", str(opml), "--tag", "imported")
+    assert code == 5, out
+    stored = sites_in(env)
+    assert [site["url"] for site in stored] == [
+        "https://alpha.example/",
+        "https://beta.example/rss",
+    ]
+    assert stored[0]["feed"] == "https://alpha.example/feed.xml"
+    assert stored[0]["name"] == "Alpha Blog"
+    assert stored[0]["tags"] == ["imported"]
+    code, out = invoke(env, "sites", "import-opml", str(opml), "--json")
+    again = data_of(out)
+    assert again["added"] == []
+    assert len(again["existing"]) == 2
+
+
+def test_posts_list_empty_and_show_unknown(env: dict[str, str]) -> None:
+    code, out = invoke(env, "posts", "list", "--status", "any", "--json")
+    assert code == 0, out
+    assert data_of(out) == []
+    code, out = invoke(env, "posts", "show", "999")
+    assert code == 4
+    assert "no post with id 999" in out
+    code, out = invoke(env, "posts", "list", "--site", "nope")
+    assert code == 4, out
+
+
+def test_poll_without_sites_and_with_unknown_site(env: dict[str, str]) -> None:
+    code, out = invoke(env, "poll", "--no-process", "--json")
+    assert code == 0, out
+    report = data_of(out)
+    assert report["sites"] == []
+    code, out = invoke(env, "poll", "--site", "nope")
+    assert code == 4, out
+
+
+def test_poll_exits_locked_when_another_poll_holds_the_lock(env: dict[str, str]) -> None:
+    lock = Path(env["HACKERBLOG_HOME"]) / "locks" / "poll.lock"
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        code, out = invoke(env, "poll", "--no-process")
+    finally:
+        os.close(fd)
+    assert code == 8, out
+    assert "--wait" in out
+
+
+def test_commands_report_a_broken_config(env: dict[str, str]) -> None:
+    config_path(env).write_text("version = 2\n", encoding="utf-8")
+    for args in (("sites", "list"), ("posts", "list"), ("poll",)):
+        code, out = invoke(env, *args)
+        assert code == 3, (args, out)
+        assert "hackerblog check" in out
+
+
+def test_import_opml_refuses_files_over_5_mib(env: dict[str, str], tmp_path: Path) -> None:
+    opml = tmp_path / "huge.opml"
+    opml.write_bytes(OPML.encode() + b" " * (5 * 1024 * 1024))
+    code, out = invoke(env, "sites", "import-opml", str(opml))
+    assert code == 2, out
+    assert "larger than 5 MiB" in out
+    assert sites_in(env) == []

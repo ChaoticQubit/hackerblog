@@ -422,6 +422,7 @@ Top level:
 | `feed` | http(s) URL | no | Feed override. Skips autodiscovery. An RSSHub route works here. |
 | `sitemap` | http(s) URL | no | Sitemap override. |
 | `post_url_pattern` | regex, max 200 chars | no | Only URLs matching it count as posts, for sitemap filtering and link diff. |
+| `allowed_hosts` | list of bare host names, at most 20 | no | Extra hosts whose feed entries count as this site's posts, for blogs that publish on a sibling host (site `example.com/blog`, posts on `example.net`). Lowercased and validated as host names; no scheme, port or path. The site's own host and its subdomains need no entry. |
 | `tags` | list of strings | no | Free labels, shown in lists and passed to the LLM as context. |
 | plus any key from `[defaults]` | | no | Per-site override. |
 
@@ -561,7 +562,7 @@ A feed is accepted only if feedparser finds at least one entry with a link. Site
 
 ### 8.3 Finding candidate posts
 
-- **Feed:** each entry gives `guid` (id or link), `url`, `title`, `author`, `published`, and `content` if present.
+- **Feed:** each entry gives `guid` (id or link), `url`, `title`, `author`, `published`, and `content` if present. Only entries whose host, ignoring a leading `www.`, is the site's host, a subdomain of it, or an entry in `allowed_hosts` are kept; the rest are dropped. Without this filter a hostile or aggregator feed could claim another followed site's post URLs, because `canonical_url` is unique across all sites (8.4).
 - **Sitemap:** follow sitemap indexes up to depth 2 and 50 child sitemaps; take `<loc>` and `<lastmod>`. Keep URLs on the site's host that match `post_url_pattern`, or, without a pattern, the post heuristic below.
 - **Link diff:** parse the index page, collect `<a href>` links, absolutise, keep same-host links that match the pattern or heuristic. New posts are links not seen in earlier snapshots (stored as posts, so the set of known URLs is the snapshot).
 - **Post heuristic** when no pattern is set: same host as the site; path under the site URL's path prefix, or containing a `/YYYY/` segment; path depth at least 2 or slug length at least 12; excludes paths with segments `tag`, `tags`, `category`, `categories`, `author`, `page`, `feed`, `search`, `about`, `contact`, and file extensions for images, archives, PDF, CSS and JS.
@@ -1693,6 +1694,7 @@ Assets: the user's LLM API key and other secrets; the local file system and LAN 
 | T11 | Notification injection | Post titles with mentions or control characters | Text cleaning and mention neutralising (14.3) | Unit |
 | T12 | Terminal escape injection | Post titles or LLM text printed by the CLI | Control and ANSI escape stripping in `cli/output.py`, Rich markup disabled | Unit |
 | T13 | Being a bad citizen, getting blocked | The agent itself | robots.txt, conditional GET, per-host delay, honest User-Agent, `Retry-After` | Integration: fixture server counts requests and asserts 304 on second poll |
+| T14 | A feed claiming another site's posts or queuing third-party pages | Hostile or aggregator feed entries | Feed entries kept only on the site's host, its subdomains or the per-site `allowed_hosts` list; sitemap and link-diff candidates must be on the site's host (8.3) | Unit: entries on an unrelated host are dropped, subdomains and `allowed_hosts` entries are kept |
 
 Residual risks, accepted for v1: a successful prompt injection can still mislead the reader about one post's content (mitigated by provenance links and the grounding check, not eliminated); lessons opened from disk run without the CSP `sandbox` directive, but have no network and no access to other files beyond what `file://` already allows a static page.
 

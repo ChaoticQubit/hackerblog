@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Limit overrun races in web apps | Example Security Blog</title>
+<meta name="author" content="Sam Rivera">
+<meta property="article:published_time" content="2026-10-28T09:00:00Z">
+<link rel="canonical" href="https://blog.example.com/posts/limit-overrun-races">
+</head>
+<body>
+<header class="site-header">
+<nav><a href="/">Home</a> <a href="/archive">Archive</a> <a href="/about">About</a></nav>
+</header>
+<main>
+<article>
+<h1>Limit overrun races in web apps</h1>
+<p class="byline">By Sam Rivera, 28 October 2026</p>
+
+<p>A limit overrun race happens when an application checks a limit and then updates the state in two separate steps. If two requests arrive inside the gap between the check and the update, both pass the check and the limit is exceeded. Gift cards redeemed twice, coupons applied three times and rate limits that never trigger are all the same bug.</p>
+
+<h2>Why the race window is so small</h2>
+
+<p>The window between the check and the write is often only a few milliseconds long. Network jitter is usually larger than that, so sending requests one after another from a laptop almost never lands two of them inside the window. For years this made these bugs look theoretical, and many teams closed reports about them as not reproducible.</p>
+
+<p>The trick is to make the requests finish at the same moment rather than start at the same moment. Jitter affects when bytes travel, so if the server receives the last byte of every request in the same packet, it starts processing all of them together.</p>
+
+<h2>The single-packet attack</h2>
+
+<p>With HTTP/2 a client can send many requests over one connection. The single-packet attack works in four steps. First, open one connection to the target. Second, send the headers and most of the body of every request. Third, withhold the final byte of each request so none of them completes. Fourth, send the final byte of every request together in one TCP packet.</p>
+
+<p>Because the final bytes share one packet, network jitter cannot separate them. In our tests the single-packet attack completed 20 to 30 requests within about one millisecond of each other, which is enough to hit almost any race window.</p>
+
+<h2>A vulnerable handler</h2>
+
+<p>The handler below redeems a coupon. It reads the remaining uses, checks them and then writes the new value in a separate statement.</p>
+
+<pre><code class="language-python">def redeem(conn, code):
+    uses = conn.execute("SELECT uses FROM coupons WHERE code = ?", (code,)).fetchone()[0]
+    if uses &lt;= 0:
+        raise ValueError("coupon used up")
+    apply_discount(code)
+    conn.execute("UPDATE coupons SET uses = ? WHERE code = ?", (uses - 1, code))
+</code></pre>
+
+<p>Two requests that both read uses equal to 1 will both apply the discount, and both will write 0. The check and the write must happen in one atomic step.</p>
+
+<h2>Fixing it</h2>
+
+<p>The fix is to let the database enforce the limit. A conditional update such as UPDATE coupons SET uses = uses - 1 WHERE code = ? AND uses &gt; 0 either changes one row or none, and the application checks the row count. Locks and serializable transactions also work, but a single conditional statement is the simplest correct fix.</p>
+
+<p>Do not try to fix a race by adding a delay or a cache. A delay only moves the window, and a cache adds a second copy of the state that can race too.</p>
+
+<h2>Testing for races</h2>
+
+<p>Test every endpoint that enforces a limit: redemptions, votes, transfers, invitations and anything with a counter. Send at least 20 identical requests with the single-packet attack and compare how many succeeded with how many should have succeeded. If more requests succeed than the limit allows, you have a limit overrun race.</p>
+
+<p>Keep in mind that a race can also hide in multi-step flows such as sign-up and email confirmation, where the state machine has a hidden sub-state between two writes.</p>
+</article>
+</main>
+<footer class="site-footer"><p>Copyright 2026 Example Security Blog. Subscribe to our newsletter.</p></footer>
+</body>
+</html>

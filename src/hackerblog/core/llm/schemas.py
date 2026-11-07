@@ -15,6 +15,7 @@ MCQ_OPTIONS_MAX = 5
 BUG_LINES_MAX = 30
 FINAL_QUIZ_MIN = 4
 FINAL_QUIZ_TYPES_MIN = 3
+QUIZ_TYPES = ("mcq", "ordering", "short_answer", "spot_the_bug", "match_pairs")
 GAME_TYPES = frozenset({"ordering", "spot_the_bug", "match_pairs"})
 
 Icon = Literal[
@@ -22,14 +23,20 @@ Icon = Literal[
     "terminal", "cloud", "user", "alert", "check", "idea", "book", "gear",
     "chart", "clock", "link", "search", "flag", "layers", "package", "eye",
 ]  # fmt: skip
+Tldr = Annotated[str, Field(max_length=200)]
+Gotcha = Annotated[str, Field(max_length=300)]
+Topic = Annotated[str, Field(max_length=40)]
+Choice = Annotated[str, Field(max_length=200)]
+Accepted = Annotated[str, Field(max_length=100)]
+PairSide = Annotated[str, Field(max_length=100)]
 Language = Annotated[str, Field(max_length=20, pattern=r"^[a-z0-9+#-]*$")]
 Stage = Literal["digest", "lesson"]
 
 
 class Strict(BaseModel):
-    """Base for every LLM output model: unknown keys are rejected."""
+    """Base for every LLM output model: unknown keys, Infinity and NaN are rejected."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 class KeyIdea(Strict):
@@ -59,15 +66,15 @@ class PostDigest(Strict):
     """Output of the digest stage: the summary and notes of one post."""
 
     title: str = Field(max_length=200)
-    tldr: list[str] = Field(min_length=3, max_length=3)
+    tldr: list[Tldr] = Field(min_length=3, max_length=3)
     why_it_matters: str = Field(max_length=400)
     summary: str = Field(max_length=900)
     key_ideas: list[KeyIdea] = Field(min_length=4, max_length=7)
     notes_markdown: str = Field(max_length=12000)
     glossary: list[Term] = Field(max_length=15)
-    gotchas: list[str] = Field(max_length=8)
+    gotchas: list[Gotcha] = Field(max_length=8)
     snippets: list[Snippet] = Field(max_length=6)
-    topics: list[str] = Field(max_length=8)
+    topics: list[Topic] = Field(max_length=8)
     difficulty: Literal["intro", "intermediate", "advanced"]
 
 
@@ -82,7 +89,7 @@ class MCQ(Grounded):
 
     type: Literal["mcq"]
     question: str = Field(max_length=300)
-    options: list[str] = Field(min_length=2, max_length=MCQ_OPTIONS_MAX)
+    options: list[Choice] = Field(min_length=2, max_length=MCQ_OPTIONS_MAX)
     correct_index: int = Field(ge=0, le=MCQ_OPTIONS_MAX - 1)
     explanation: str = Field(max_length=500)
 
@@ -92,7 +99,7 @@ class Ordering(Grounded):
 
     type: Literal["ordering"]
     prompt: str = Field(max_length=300)
-    steps_in_order: list[str] = Field(min_length=3, max_length=7)
+    steps_in_order: list[Choice] = Field(min_length=3, max_length=7)
     explanation: str = Field(max_length=500)
 
 
@@ -101,7 +108,7 @@ class ShortAnswer(Grounded):
 
     type: Literal["short_answer"]
     question: str = Field(max_length=300)
-    accepted_answers: list[str] = Field(min_length=1, max_length=5)
+    accepted_answers: list[Accepted] = Field(min_length=1, max_length=5)
     explanation: str = Field(max_length=500)
 
 
@@ -111,7 +118,7 @@ class SpotTheBug(Grounded):
     type: Literal["spot_the_bug"]
     prompt: str = Field(max_length=300)
     language: Language
-    lines: list[str] = Field(min_length=2, max_length=BUG_LINES_MAX)
+    lines: list[Choice] = Field(min_length=2, max_length=BUG_LINES_MAX)
     bug_line: int = Field(ge=0, le=BUG_LINES_MAX - 1)
     explanation: str = Field(max_length=500)
 
@@ -121,7 +128,7 @@ class MatchPairs(Grounded):
 
     type: Literal["match_pairs"]
     prompt: str = Field(max_length=300)
-    pairs: list[tuple[str, str]] = Field(min_length=3, max_length=6)
+    pairs: list[tuple[PairSide, PairSide]] = Field(min_length=3, max_length=6)
     explanation: str = Field(max_length=500)
 
 
@@ -172,13 +179,17 @@ class Section(Strict):
 
 
 class LessonSpec(Strict):
-    """Output of the lesson stage: everything the lesson template needs beyond the digest."""
+    """Output of the lesson stage: everything the lesson template needs beyond the digest.
+
+    final_quiz may be empty so a lesson whose quiz failed grounding still validates;
+    lesson_problems enforces FINAL_QUIZ_MIN on generated output.
+    """
 
     diagram: Diagram | None
     sections: list[Section] = Field(min_length=2, max_length=6)
     explorable: Explorable | None
     game: QuizItem | None
-    final_quiz: list[QuizItem] = Field(min_length=FINAL_QUIZ_MIN, max_length=8)
+    final_quiz: list[QuizItem] = Field(max_length=8)
 
 
 class Answer(Strict):
@@ -219,6 +230,14 @@ class Generated[T]:
         assert self.model
 
 
+@dataclass(frozen=True)
+class Turn:
+    """One earlier message of an `ask` conversation, passed back as history."""
+
+    role: Literal["user", "assistant"]
+    text: str
+
+
 class InvalidModelOutputError(ValueError):
     """The model output passed the schema but failed post-validation, or never parsed."""
 
@@ -236,12 +255,12 @@ def quiz_item_problems(item: MCQ | Ordering | ShortAnswer | SpotTheBug | MatchPa
 
 
 def lesson_problems(lesson: LessonSpec) -> list[str]:
-    """Return every post-validation problem of a schema-valid lesson (section 11.3)."""
+    """Return every lesson-level post-validation problem of a schema-valid lesson (11.3).
+
+    Quiz items that break an item rule are not problems here; grounding drops them. The
+    lesson fails only when fewer than FINAL_QUIZ_MIN valid final items remain.
+    """
     problems: list[str] = []
-    checks = [section.check for section in lesson.sections if section.check is not None]
-    games = [lesson.game] if lesson.game is not None else []
-    for item in [*lesson.final_quiz, *checks, *games]:
-        problems.extend(quiz_item_problems(item))
     if lesson.game is not None and lesson.game.type not in GAME_TYPES:
         problems.append(f"game type {lesson.game.type} is not one of {sorted(GAME_TYPES)}")
     explorable = lesson.explorable
@@ -251,7 +270,29 @@ def lesson_problems(lesson: LessonSpec) -> list[str]:
         outside = [p.at for p in explorable.points if not explorable.min <= p.at <= explorable.max]
         if outside:
             problems.append(f"explorable points outside range: {outside}")
-    types = {item.type for item in lesson.final_quiz}
-    if len(types) < FINAL_QUIZ_TYPES_MIN:
-        problems.append(f"final_quiz needs {FINAL_QUIZ_TYPES_MIN} distinct types, has {len(types)}")
+    item_problems = [quiz_item_problems(item) for item in lesson.final_quiz]
+    valid = sum(not found for found in item_problems)
+    if valid < FINAL_QUIZ_MIN:
+        details = "; ".join(p for found in item_problems for p in found)
+        problems.append(
+            f"final_quiz needs at least {FINAL_QUIZ_MIN} valid items, has {valid}"
+            + (f" ({details})" if details else "")
+        )
     return problems
+
+
+def quiz_variety_problems(lesson: LessonSpec) -> list[str]:
+    """Return the soft problem of a final quiz with under FINAL_QUIZ_TYPES_MIN distinct types.
+
+    Names the missing types so a retry can be told what to add. An empty final quiz has no
+    variety problem. Never a reason to fail a post.
+    """
+    types = {item.type for item in lesson.final_quiz}
+    if not types or len(types) >= FINAL_QUIZ_TYPES_MIN:
+        return []
+    missing = [kind for kind in QUIZ_TYPES if kind not in types]
+    assert missing
+    return [
+        f"final_quiz uses {len(types)} of the {FINAL_QUIZ_TYPES_MIN} distinct types it should;"
+        f" add items of these types: {', '.join(missing)}"
+    ]

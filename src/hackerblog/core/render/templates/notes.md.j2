@@ -1,0 +1,51 @@
+---
+title: {{ front.title }}
+source_url: {{ front.source_url }}
+site: {{ front.site }}
+published: {{ front.published }}
+processed: {{ front.processed }}
+lesson: {{ front.lesson }}
+tags: {{ front.tags }}
+---
+
+# {{ title }}
+
+[Open the lesson]({{ lesson }}) · [Read the original](<{{ source_url }}>)
+
+## TL;DR
+
+{% for line in tldr %}
+- {{ line }}
+{% endfor %}
+
+**Why it matters:** {{ why }}
+
+## Summary
+
+{{ summary }}
+
+## Key ideas
+
+{% for idea in ideas %}
+- **{{ idea.claim }}** {{ idea.detail }}
+{% endfor %}
+
+## Notes
+
+{{ notes }}
+
+{% if glossary %}
+## Glossary
+
+{% for term in glossary %}
+- **{{ term.term }}**: {{ term.definition }}
+{% endfor %}
+
+{% endif %}
+{% if gotchas %}
+## Gotchas
+
+{% for gotcha in gotchas %}
+- {{ gotcha }}
+{% endfor %}
+{% endif %}

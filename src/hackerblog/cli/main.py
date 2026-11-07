@@ -15,6 +15,7 @@ import typer
 
 from hackerblog import __version__
 from hackerblog.cli.commands import posts as posts_commands
+from hackerblog.cli.commands import process, study
 from hackerblog.cli.commands import sites as sites_commands
 from hackerblog.cli.commands.sites import site_line
 from hackerblog.cli.output import clean, emit_json, say
@@ -41,6 +42,9 @@ app = typer.Typer(
 )
 
 Provider = Literal["anthropic", "openai", "openai_compatible", "ollama"]
+study.register(app)
+process.register(app)
+
 JsonFlag = Annotated[bool, typer.Option("--json", help="Print one JSON document.")]
 
 

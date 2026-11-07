@@ -1,0 +1,8 @@
+{% macro icon(name, cls="icon") %}<svg class="{{ cls }}" aria-hidden="true" focusable="false"><use href="#i-{{ name }}"></use></svg>{% endmacro %}
+
+{% macro widget(key, kind) %}
+<div class="widget" data-item="{{ key }}" id="w-{{ key }}">
+  <p class="widget-kind">{{ kind }}</p>
+  <p class="needs-js">Turn on JavaScript to answer this question.</p>
+</div>
+{% endmacro %}

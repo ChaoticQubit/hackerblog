@@ -1,0 +1,28 @@
+<div class="diagram-wrap" tabindex="0" role="region" aria-label="Diagram, scroll sideways on small screens">
+<svg class="diagram diagram-{{ diagram.kind }}" viewBox="0 0 {{ shapes.width }} {{ shapes.height }}" role="img" aria-labelledby="diagram-title diagram-desc" xmlns="http://www.w3.org/2000/svg">
+  <title id="diagram-title">{{ diagram.title }}</title>
+  <desc id="diagram-desc">{% for node in diagram.nodes %}{{ node.label }}{% if not loop.last %}, then {% endif %}{% endfor %}</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="d-arrow" d="M0 0L10 5L0 10z"></path>
+    </marker>
+  </defs>
+{% for d in shapes.edges %}
+  <path class="d-edge" d="{{ d }}"{% if diagram.kind == "flow" %} marker-end="url(#arrow)"{% endif %}></path>
+{% endfor %}
+{% for dot in shapes.dots %}
+  <circle class="d-dot" cx="{{ dot.cx }}" cy="{{ dot.cy }}" r="8"></circle>
+{% endfor %}
+{% for node in shapes.nodes %}
+{% if diagram.kind != "timeline" %}
+  <rect class="d-node" x="{{ node.x }}" y="{{ node.y }}" width="{{ node.w }}" height="{{ node.h }}" rx="4"></rect>
+{% endif %}
+  <text class="d-label" text-anchor="middle">{% for line in node.lines %}<tspan x="{{ line.x }}" y="{{ line.y }}">{{ line.text }}</tspan>{% endfor %}</text>
+{% endfor %}
+</svg>
+</div>
+<ol class="d-details">
+{% for node in diagram.nodes %}
+  <li><details><summary>{{ node.label }}</summary>{{ node.detail }}</details></li>
+{% endfor %}
+</ol>

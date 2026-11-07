@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="{{ csp }}">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>HackerBlog library</title>
+<style>{{ css | safe }}</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the posts</a>
+<div class="page">
+<header class="library-head">
+  <h1>HackerBlog library</h1>
+  <p class="lede">{{ total }} lesson{{ "" if total == 1 else "s" }} from the blogs you follow. Open a lesson to learn, or the notes to review.</p>
+</header>
+<main id="main">
+{% if not groups %}
+  <p>No lessons yet. Run <code>hackerblog poll</code> or <code>hackerblog process URL</code> to make the first one.</p>
+{% endif %}
+{% for site, posts in groups %}
+  <section class="site-group" aria-labelledby="site-{{ site }}">
+    <h2 id="site-{{ site }}">{{ posts[0].site_name }}</h2>
+    <ul class="post-list">
+{% for post in posts %}
+      <li class="post-row">
+        <a class="title" href="{{ post.lesson_href }}">{{ post.title }}</a>
+        <span class="status">{{ reading[post.reading_status] }}</span>
+        <span class="post-meta"><time datetime="{{ post.published }}">{{ post.published }}</time><a href="{{ post.notes_href }}">Notes</a></span>
+      </li>
+{% endfor %}
+    </ul>
+  </section>
+{% endfor %}
+</main>
+</div>
+</body>
+</html>

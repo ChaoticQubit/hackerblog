@@ -1,0 +1,201 @@
+{% from "partials/macros.html.j2" import icon, widget %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="{{ csp }}">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="generator" content="HackerBlog template {{ template_version }}">
+<title>{{ meta.title }} - HackerBlog lesson</title>
+<style>{{ css | safe }}</style>
+</head>
+<body>
+{{ icons | safe }}
+<a class="skip" href="#main">Skip to the lesson</a>
+<div class="page">
+<header class="masthead">
+  <p class="byline">{{ meta.site_name }}{% if meta.author %} · {{ meta.author }}{% endif %}{% if meta.published_at %} · <time datetime="{{ meta.published_at }}">{{ meta.published_at[:10] }}</time>{% endif %}</p>
+  <h1>{{ meta.title }}</h1>
+{% if meta.truncated %}
+  <p class="notice">{{ icon("book") }}<span>Based on the first part of a long post.</span></p>
+{% endif %}
+{% for notice in notices %}
+  <p class="notice" role="note">{{ icon("alert") }}<span>{{ notice }}</span></p>
+{% endfor %}
+  <div class="actions">
+    <a class="btn btn-accent" href="{{ meta.source_url }}" target="_blank" rel="noopener noreferrer">Read the original {{ icon("external") }}</a>
+    <a class="btn btn-quiet" href="#quiz">Test yourself</a>
+  </div>
+  <ul class="tiles" aria-label="Lesson at a glance">
+    <li class="tile"><span class="tile-value">{{ meta.reading_minutes }} min</span><span class="tile-label">original reading time</span></li>
+    <li class="tile"><span class="tile-value">{{ digest.difficulty | capitalize }}</span><span class="tile-label">level</span></li>
+    <li class="tile"><span class="tile-value">{{ digest.key_ideas | length }}</span><span class="tile-label">key ideas</span></li>
+    <li class="tile"><span class="tile-value">{{ questions }}</span><span class="tile-label">questions to check yourself</span></li>
+  </ul>
+</header>
+<nav class="toc" aria-label="Lesson contents">
+  <ul>
+    <li><a href="#tldr">TL;DR</a></li>
+{% if shapes %}
+    <li><a href="#diagram">Diagram</a></li>
+{% endif %}
+    <li><a href="#ideas">Key ideas</a></li>
+{% if digest.snippets %}
+    <li><a href="#code">Code</a></li>
+{% endif %}
+    <li><a href="#walkthrough">Walkthrough</a></li>
+{% if lesson.explorable %}
+    <li><a href="#explore">Explore</a></li>
+{% endif %}
+{% if lesson.game %}
+    <li><a href="#game">Game</a></li>
+{% endif %}
+    <li><a href="#quiz">Quiz</a></li>
+    <li><a href="#review">Review</a></li>
+    <li><a href="#ask">Ask</a></li>
+  </ul>
+</nav>
+<main id="main">
+<section class="block" id="tldr" aria-labelledby="tldr-h">
+  <h2 id="tldr-h">TL;DR</h2>
+  <ul class="tldr">
+{% for line in digest.tldr %}
+    <li>{{ line }}</li>
+{% endfor %}
+  </ul>
+  <div class="why"><strong>Why this matters</strong>{{ digest.why_it_matters }}</div>
+  <div class="prose measure summary"><p>{{ digest.summary }}</p></div>
+</section>
+{% if shapes %}
+<section class="block" id="diagram" aria-labelledby="diagram-h">
+  <h2 id="diagram-h">{{ lesson.diagram.title }}</h2>
+  <p class="intro">The main flow of the post. Open a step to read what happens there.</p>
+{% with diagram=lesson.diagram %}{% include "partials/diagram.html.j2" %}{% endwith %}
+</section>
+{% endif %}
+<section class="block" id="ideas" aria-labelledby="ideas-h">
+  <h2 id="ideas-h">Key ideas</h2>
+  <ul class="ideas">
+{% for idea in digest.key_ideas %}
+    <li class="idea">
+      {{ icon(idea.icon, "icon icon-large") }}
+      <h3>{{ idea.claim }}</h3>
+      <details><summary>Show detail</summary><p>{{ idea.detail }}</p></details>
+    </li>
+{% endfor %}
+  </ul>
+</section>
+{% if digest.snippets %}
+<section class="block" id="code" aria-labelledby="code-h">
+  <h2 id="code-h">Code from the post</h2>
+{% for snippet in digest.snippets %}
+  <figure class="snippet">
+    <div class="snippet-head"><span>{{ snippet.language or "text" }}</span><button class="btn btn-quiet btn-small" type="button" data-copy="snippet-{{ loop.index0 }}">{{ icon("copy") }}Copy</button></div>
+    <pre><code id="snippet-{{ loop.index0 }}">{{ snippet.code }}</code></pre>
+    <figcaption class="snippet-note prose">{{ snippet.explanation | md | safe }}</figcaption>
+  </figure>
+{% endfor %}
+</section>
+{% endif %}
+<section class="block" id="walkthrough" aria-labelledby="walkthrough-h">
+  <h2 id="walkthrough-h">Walkthrough</h2>
+{% for section in lesson.sections %}
+  <article class="measure" id="s-{{ loop.index0 }}" aria-labelledby="s-{{ loop.index0 }}-h">
+    <h3 id="s-{{ loop.index0 }}-h">{{ section.heading }}</h3>
+    <div class="prose">{{ section.body_markdown | md | safe }}</div>
+{% if section.check %}
+    {{ widget("check-" ~ loop.index0, "Quick check") }}
+{% endif %}
+  </article>
+{% endfor %}
+</section>
+{% if lesson.explorable %}
+<section class="block" id="explore" aria-labelledby="explore-h">
+  <h2 id="explore-h">Explore: {{ lesson.explorable.label }}</h2>
+  <p class="intro">Move the slider and watch what changes.</p>
+  <div class="widget" id="explorable">
+    <p class="needs-js">Turn on JavaScript to use the slider.</p>
+    <ul class="needs-js">
+{% for point in lesson.explorable.points %}
+      <li>{{ point.at }} {{ lesson.explorable.unit }}: {{ point.outcome }}</li>
+{% endfor %}
+    </ul>
+  </div>
+</section>
+{% endif %}
+{% if lesson.game %}
+<section class="block" id="game" aria-labelledby="game-h">
+  <h2 id="game-h">{{ game_heading }}</h2>
+  {{ widget("game", "Game") }}
+</section>
+{% endif %}
+<section class="block" id="quiz" aria-labelledby="quiz-h">
+{% if lesson.final_quiz %}
+  <h2 id="quiz-h">Final quiz</h2>
+  <p class="intro">Answer each question, then check it. Your score stays on this computer.</p>
+{% for item in lesson.final_quiz %}
+  {{ widget("final-" ~ loop.index0, "Question " ~ loop.index ~ " of " ~ loop.length) }}
+{% endfor %}
+  <div class="score"><p id="score" aria-live="polite">Answer every question to see your score.</p><button class="btn btn-small" type="button" id="reset">Start again</button></div>
+{% else %}
+  <h2 id="quiz-h">No final quiz</h2>
+  <p class="intro">The quick checks above and the flashcards below still help you remember.</p>
+{% endif %}
+</section>
+<section class="block" id="review" aria-labelledby="review-h">
+  <h2 id="review-h">Review</h2>
+  <div class="review">
+{% if digest.glossary %}
+    <div>
+      <h3>Flashcards</h3>
+      <div id="flashcards" class="widget"><p class="needs-js">Turn on JavaScript to use the flashcards.</p></div>
+    </div>
+    <div>
+      <h3>Glossary</h3>
+      <dl class="glossary">
+{% for term in digest.glossary %}
+        <dt>{{ term.term }}</dt>
+        <dd>{{ term.definition }}</dd>
+{% endfor %}
+      </dl>
+    </div>
+{% endif %}
+{% if digest.gotchas %}
+    <div>
+      <h3>Gotchas</h3>
+      <ul class="gotchas">
+{% for gotcha in digest.gotchas %}
+        <li>{{ icon("alert") }}<span>{{ gotcha }}</span></li>
+{% endfor %}
+      </ul>
+    </div>
+{% endif %}
+  </div>
+</section>
+<section class="block" id="ask" aria-labelledby="ask-h">
+  <h2 id="ask-h">Ask the agent</h2>
+  <div class="ask">
+    <label class="field" for="ask-question">Your question about this post</label>
+    <input type="text" id="ask-question" value="What should I remember from this post?" maxlength="300">
+    <pre><code id="ask-command">hackerblog ask --post {{ meta.post_id }} "What should I remember from this post?"</code></pre>
+    <button class="btn" type="button" data-copy="ask-command">{{ icon("copy") }}Copy command</button>
+    <p class="feedback" id="copy-status" aria-live="polite"></p>
+  </div>
+</section>
+</main>
+</div>
+<footer class="foot">
+  <div class="page">
+    <p><strong>Source:</strong> <a href="{{ meta.source_url }}" target="_blank" rel="noopener noreferrer">{{ meta.source_url }}</a></p>
+    <p><strong>Made by:</strong> {{ meta.models | join(", ") }}{% for stage, version in meta.prompt_versions | dictsort %} · {{ stage }} prompt {{ version }}{% endfor %} · template {{ template_version }}</p>
+    <p><strong>Generated:</strong> <time datetime="{{ meta.generated_at }}">{{ meta.generated_at }}</time></p>
+{% for notice in notices %}
+    <p>{{ notice }}</p>
+{% endfor %}
+  </div>
+</footer>
+<script type="application/json" id="lesson-data">{{ data | tojson }}</script>
+<script>{{ js | safe }}</script>
+</body>
+</html>

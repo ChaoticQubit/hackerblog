@@ -5,13 +5,17 @@ description = "Follow blogs, turn every post into notes and an interactive lesso
 readme = "docs/architecture.md"
 requires-python = ">=3.12"
 dependencies = [
+    "agno[anthropic,openai]>=3.1.12,<4",
     "apscheduler>=3.11.3,<4",
     "fastapi>=0.162,<1",
     "feedparser>=6.0.11,<7",
     "httpx>=0.28,<1",
+    "jinja2>=3.1.6",
     "lxml>=5.3,<7",
+    "nh3>=0.3.7",
     "protego>=0.4,<1",
     "pydantic>=2.11,<3",
+    "trafilatura>=2.3.1",
     "typer>=0.16,<1",
     "uvicorn>=0.54,<1",
 ]
@@ -45,8 +49,10 @@ ignore = ["S101", "PLR0911", "PLR0913", "PLR2004", "PLC0415"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/hackerblog/cli/**" = ["PLR0917"]
+"src/hackerblog/core/llm/agno_backend.py" = ["E402"]
 "scripts/**" = ["S310", "S603", "S607"]
 "tests/**" = ["S104", "S105", "S106", "S108", "S603", "PLR0915"]
+"tests/e2e/**" = ["S603"]
 
 [tool.pyright]
 include = ["src", "tests", "scripts"]
@@ -58,4 +64,5 @@ reportMissingTypeStubs = false
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 pythonpath = ["."]
+markers = ["integration: slow tests against a real LLM provider; deselect with -m 'not integration'"]
 filterwarnings = ["ignore:Using `httpx` with `starlette.testclient` is deprecated"]

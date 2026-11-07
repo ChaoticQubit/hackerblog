@@ -31,3 +31,31 @@ jobs:
         run: make typecheck
       - name: Unit tests
         run: make test
+
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: check
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install locked dependencies
+        run: make setup
+      - name: Fetch the pinned nuclei templates and verify their checksum
+        run: make nuclei-templates
+      - name: Boot the service and scan it with the pinned nuclei image
+        run: >-
+          uv run python scripts/scan_service.py --out scan-results
+          docker run --rm --network host
+          -v "$PWD/.local-state/nuclei-templates-10.5.1:/templates:ro"
+          projectdiscovery/nuclei:v3.11.1@sha256:582d5546902e67052097cb2d07296c642d50a1afc5e44623cb038845df9a32eb
+          -t /templates -duc
+      - name: Keep the scan output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuclei-results
+          path: scan-results
+          if-no-files-found: ignore

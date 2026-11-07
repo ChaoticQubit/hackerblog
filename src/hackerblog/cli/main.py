@@ -2,6 +2,8 @@
 
 import asyncio
 import os
+import re
+import shutil
 import signal
 import sys
 import traceback
@@ -22,6 +24,13 @@ from hackerblog.core.discovery import service as discovery
 from hackerblog.core.errors import ExitCode, HackerBlogError
 from hackerblog.core.logging import setup_logging
 from hackerblog.core.paths import resolve_paths
+from hackerblog.core.schedule import (
+    LAUNCHD_LABEL,
+    poll_time,
+    render_cron,
+    render_launchd,
+    render_systemd,
+)
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -222,6 +231,112 @@ def poll(
         say(f"{prefix}{count} sites polled, {report.new_posts} new, {len(failed)} failed")
     if report.code != ExitCode.OK:
         raise typer.Exit(int(report.code))
+
+
+ScheduleKind = Literal["launchd", "cron", "systemd"]
+schedule_app = typer.Typer(no_args_is_help=True, help="Print a schedule for cron mode.")
+app.add_typer(schedule_app, name="schedule")
+
+
+@app.command()
+def serve(
+    ctx: typer.Context,
+    host: Annotated[str | None, typer.Option("--host", help="Bind address.")] = None,
+    port: Annotated[int | None, typer.Option("--port", min=1, max=65535)] = None,
+) -> None:
+    """Run the HTTP API on 127.0.0.1 by default. Needs HACKERBLOG_API_TOKEN."""
+    import uvicorn
+
+    from hackerblog.api.app import ServiceSettings, create_app
+    from hackerblog.api.security import is_loopback
+
+    state = get_state(ctx)
+    try:
+        config, token = service.service_config(state.paths, os.environ)
+    except HackerBlogError as error:
+        fail(error, as_json=False)
+        return
+    bind_host = host or config.api.host
+    bind_port = port or config.api.port
+    if not is_loopback(bind_host):
+        sys.stderr.write(
+            f"Warning: {bind_host} is reachable from other machines; every route needs the token\n"
+        )
+    settings = ServiceSettings(token=token, paths=state.paths, config=config, bind_host=bind_host)
+    say(f"Serving on http://{bind_host}:{bind_port} (Ctrl-C to stop)")
+    sys.stdout.flush()
+    uvicorn.run(
+        create_app(settings),
+        host=bind_host,
+        port=bind_port,
+        server_header=False,
+        proxy_headers=False,
+        access_log=False,
+        log_level="warning",
+    )
+
+
+def _executable() -> Path:
+    sibling = Path(sys.executable).with_name("hackerblog")
+    if sibling.is_file():
+        return sibling
+    found = shutil.which("hackerblog")
+    return Path(found) if found else Path("hackerblog")
+
+
+def _clock(value: str) -> tuple[int, int]:
+    match = re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)", value)
+    if match is None:
+        raise typer.BadParameter("use HH:MM, for example 07:30", param_hint="--time")
+    return int(match.group(1)), int(match.group(2))
+
+
+@schedule_app.command("show")
+def schedule_show(
+    ctx: typer.Context,
+    kind: Annotated[ScheduleKind | None, typer.Option("--kind")] = None,
+    time: Annotated[str | None, typer.Option("--time", help="HH:MM local time.")] = None,
+    as_json: JsonFlag = False,
+) -> None:
+    """Print a launchd, cron or systemd schedule that runs `hackerblog poll` daily."""
+    state = get_state(ctx)
+    try:
+        config = discovery.load_valid_config(state.paths)
+    except HackerBlogError as error:
+        fail(error, as_json)
+        return
+    chosen: ScheduleKind = kind or ("launchd" if sys.platform == "darwin" else "systemd")
+    hour, minute = _clock(time) if time else poll_time(config.notify.digest_time)
+    exe = _executable()
+    logs = state.paths.logs
+    if chosen == "launchd":
+        target = Path("~/Library/LaunchAgents") / f"{LAUNCHD_LABEL}.plist"
+        files = {str(target): render_launchd(exe, logs, hour, minute)}
+        steps = f"launchctl bootstrap gui/$(id -u) {target}"
+    elif chosen == "cron":
+        files = {"crontab": render_cron(exe, logs / "poll.log", hour, minute) + "\n"}
+        steps = "crontab -e, then add the line above"
+    else:
+        service_unit, timer_unit = render_systemd(exe, hour, minute)
+        folder = Path("~/.config/systemd/user")
+        files = {
+            str(folder / "hackerblog-poll.service"): service_unit,
+            str(folder / "hackerblog-poll.timer"): timer_unit,
+        }
+        steps = (
+            "systemctl --user daemon-reload && systemctl --user enable --now hackerblog-poll.timer"
+        )
+    note = "Per-site schedules apply only in serve mode; this polls every enabled site daily."
+    if as_json:
+        emit_json(
+            {"kind": chosen, "time": f"{hour:02d}:{minute:02d}", "files": files, "install": steps}
+        )
+        return
+    for name, content in files.items():
+        say(f"== {name}")
+        sys.stdout.write(clean(content))
+    say(f"Install: {steps}")
+    say(note)
 
 
 app.add_typer(sites_commands.app, name="sites")

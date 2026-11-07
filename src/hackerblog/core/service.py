@@ -10,6 +10,7 @@ from pathlib import Path
 
 from hackerblog.core.config import Config, Problem, load_config
 from hackerblog.core.credentials import PROVIDER_KEYS, ensure_private, lookup, read_secrets
+from hackerblog.core.discovery.service import load_valid_config
 from hackerblog.core.errors import ExitCode, HackerBlogError
 from hackerblog.core.paths import Paths
 from hackerblog.core.store.migrate import connect, migrate
@@ -145,3 +146,27 @@ def check(paths: Paths, env: Mapping[str, str]) -> CheckReport:
     if key_name and lookup(key_name, file_values, env) is None:
         return CheckReport(ExitCode.LLM_AUTH, [], config, key_name)
     return CheckReport(ExitCode.OK, [], config)
+
+
+def service_config(paths: Paths, env: Mapping[str, str]) -> tuple[Config, str]:
+    """Return the validated config and the API token `serve` needs.
+
+    Raises a config error when sites.toml is invalid, the home folder has no database,
+    or HACKERBLOG_API_TOKEN is missing from both the environment and secrets.env.
+    """
+    config = load_valid_config(paths)
+    if not paths.db.is_file():
+        raise HackerBlogError(ExitCode.CONFIG, f"{paths.db} does not exist", "Run: hackerblog init")
+    token = lookup("HACKERBLOG_API_TOKEN", read_secrets(paths.secrets), env)
+    if token is None or len(token) < 16:
+        raise HackerBlogError(
+            ExitCode.CONFIG,
+            "HACKERBLOG_API_TOKEN is not set or shorter than 16 characters",
+            f"Add HACKERBLOG_API_TOKEN=... to {paths.secrets}, or rerun: hackerblog init",
+        )
+    conn = connect(paths.db)
+    try:
+        migrate(conn)
+    finally:
+        conn.close()
+    return config, token

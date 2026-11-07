@@ -1498,7 +1498,7 @@ Print a ready-to-install schedule for cron mode. Option `--kind [launchd|cron|sy
 | `--no-scheduler` | off | Do not start APScheduler. |
 | `--no-worker` | off | Do not run the job worker in-process. |
 
-Starts uvicorn with the FastAPI app, applies migrations, starts the scheduler and the worker (`--concurrency 2`). Refuses to start (exit 3) if `HACKERBLOG_API_TOKEN` is unset. Ctrl-C drains running jobs for up to 30 s, then releases them.
+Starts uvicorn with the FastAPI app, applies migrations, starts the scheduler and the worker (`--concurrency 2`). Discovery is on trunk but not yet wired into `serve`, and processing has not landed, so `serve` passes no poll entry point, so `/v1/health` reports the scheduler and worker as `disabled`, and `--no-scheduler` and `--no-worker` are not registered yet. Refuses to start (exit 3) if `HACKERBLOG_API_TOKEN` is unset. Ctrl-C drains running jobs for up to 30 s, then releases them.
 
 ### 15.4 Example session
 
@@ -1575,20 +1575,21 @@ $ echo $?
 
 ## 16. HTTP API
 
-FastAPI app in `hackerblog.api.app`, served by `hackerblog serve`. OpenAPI at `/openapi.json`, docs at `/docs`. All JSON. Errors use RFC 9457 `application/problem+json` with `type`, `title`, `status`, `detail` and a `code` field equal to the CLI error code name.
+FastAPI app in `hackerblog.api.app`, served by `hackerblog serve`. The OpenAPI contract is at `/v1/openapi.json` and needs the token; `/docs` and `/redoc` are off, because they load third-party scripts onto the API origin. All JSON. Errors use RFC 9457 `application/problem+json` with `type`, `title`, `status`, `detail` and a `code` field equal to the CLI error code name.
 
 **Auth and transport rules:**
 
-- Every `/v1/*` route requires `Authorization: Bearer <HACKERBLOG_API_TOKEN>`, compared with `hmac.compare_digest`. No cookies, so no CSRF surface.
-- `/health` is unauthenticated and reveals only status booleans and the version.
+- Every `/v1/*` route except `/v1/health` requires `Authorization: Bearer <HACKERBLOG_API_TOKEN>`, compared with `hmac.compare_digest`. No cookies, so no CSRF surface.
+- `/v1/health` is unauthenticated and reveals only status words and the version.
 - `/files/*` is unauthenticated only when bound to a loopback address; otherwise it also needs the bearer token.
-- `TrustedHostMiddleware` allows only `127.0.0.1`, `localhost` and `[::1]` (plus the configured host when it is not loopback), which blocks DNS-rebinding attacks from web pages.
+- A Trusted Host middleware allows only `127.0.0.1`, `localhost` and `[::1]` (plus the configured host when it is not loopback), which blocks DNS-rebinding attacks from web pages. It is a small ASGI middleware rather than Starlette's `TrustedHostMiddleware`, because that one cuts the Host header at the first colon and so cannot parse `[::1]:8765`.
 - No CORS headers by default. Request bodies are capped at 64 KiB.
+- Every response carries baseline security headers unless the route sets its own: `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `Cross-Origin-Opener-Policy`, `Cross-Origin-Resource-Policy` and `Cross-Origin-Embedder-Policy` set to same-origin or require-corp, `X-Permitted-Cross-Domain-Policies: none` and a `Permissions-Policy` that turns off camera, microphone and geolocation. Lessons under `/files` keep the section 12.3 CSP and allow same-origin framing for the later Vue UI. `Strict-Transport-Security` is not sent: the service speaks plain HTTP on loopback, where browsers ignore it; a TLS-terminating proxy in front of a non-loopback bind should add it.
 - Mutating calls that start long work return `202 Accepted` with a resource to poll.
 
 | Method and path | Purpose | Request | Response |
 |---|---|---|---|
-| `GET /health` | Liveness and smoke check | `?deep=true` also runs a write probe (`BEGIN IMMEDIATE` then rollback) | `200 {"status": "ok", "version", "db": "ok", "scheduler": "running\|disabled", "worker": "running\|disabled"}` or `503` |
+| `GET /v1/health` | Liveness and smoke check, no token | `?deep=true` also runs a write probe (`BEGIN IMMEDIATE` then rollback) | `200 {"status": "ok", "version", "db": "ok", "scheduler": "running\|disabled", "worker": "running\|disabled"}` or `503` |
 | `GET /v1/status` | Same data as `hackerblog status` | | `Status` |
 | `GET /v1/sites` | List sites | `?all=true` | `[Site]` |
 | `GET /v1/sites/{slug}` | One site | | `SiteDetail` |
@@ -1703,7 +1704,7 @@ Residual risks, accepted for v1: a successful prompt injection can still mislead
 - **Logs:** stdlib `logging` with a JSON formatter (one object per line: `ts`, `level`, `event`, `msg`, and context keys `site`, `post_id`, `job_id`, `poll_run_id`, `duration_ms`, `tokens_in`, `tokens_out`). CLI default level `WARNING` to stderr in human format; `-v` and `-vv` raise it. `serve` logs JSON to stderr and to `$HACKERBLOG_HOME/logs/hackerblog.log` with `RotatingFileHandler` (10 MiB, 5 files). Post bodies, prompts and secrets are never logged.
 - **Event names** (the `event` field): `poll.started`, `poll.site_done`, `poll.finished`, `discovery.resolved`, `fetch.not_modified`, `fetch.blocked`, `job.claimed`, `job.done`, `job.failed`, `llm.call`, `llm.cache_hit`, `budget.exhausted`, `render.done`, `notify.sent`, `notify.failed`.
 - **State you can query:** `poll_runs`, per-site health columns, `jobs`, `llm_usage`, `events` and `notifications`, all surfaced by `hackerblog status` and `GET /v1/status`. `status` exits 5 when a site is unhealthy or a job is dead, so a cron wrapper or a monitoring check can alert on it.
-- **Heartbeats:** the scheduler and worker write `meta.scheduler_heartbeat_at` and `meta.worker_heartbeat_at` every 30 s; `/health` reports them stale after 2 minutes.
+- **Heartbeats:** the scheduler and worker write `meta.scheduler_heartbeat_at` and `meta.worker_heartbeat_at` every 30 s; `/v1/health` reports them stale after 2 minutes.
 - No metrics server or tracing in v1; the tables above answer the questions a single user asks. OpenTelemetry can be added at the facade when the host app wants traces.
 
 ## 21. Testing strategy
@@ -1715,7 +1716,7 @@ Per the project rules: unit tests first (TDD), integration and e2e against real 
 | Unit | Pure functions and single modules: `canonicalize`, post heuristic, link diff, sitemap and OPML parsing, robots decisions, rate-limit timing, SSRF address classification, slugs and path containment, Pydantic bounds and post-validation, grounding, budget maths, cache keys, job claim and backoff, template rendering and CSP hashes, nh3 output, webhook signing against the Standard Webhooks test vector, text cleaning, CLI argument parsing and exit-code mapping, import-boundary rules | A real temporary SQLite file (cheap and exact, so no DB mock) and saved real-world feed and page fixtures | One fake implementing the three `agno_backend` functions with canned valid outputs, because a live model is non-deterministic and offline runs are impossible. No mocks elsewhere |
 | Integration | One capability at a time against real services: discovery for a feed site, a sitemap-only site and a no-feed site; conditional GET and 304; robots disallow; 429 with `Retry-After`; redirect to a private IP refused; gzip bomb cut off; full `process_post` with a real model; webhook delivery and retry to a real local receiver verifying signatures; Apprise to a local `json://` receiver; FTS search; API routes with auth and Trusted Host | A local fixture web server (uvicorn serving `tests/integration/fixtures/`), allowed through `allow_private_hosts`; Ollama in CI with `llama3.2:3b` pinned by digest; a local webhook receiver | None |
 | End-to-end | The user flow: `hackerblog init`, `sites add` a fixture blog, `serve` running, `poll` through the API, open the lesson in Playwright Chromium, complete the quiz and game by keyboard, assert zero console errors, zero CSP violations and zero network requests from the lesson; then publish a new fixture post, poll again, assert exactly one new `post.processed` event, and `hackerblog quiz` marks it learned. The webhook and Apprise steps join the flow when M3 lands | Real CLI subprocesses, real `hackerblog serve`, Ollama, Playwright | None |
-| Smoke | The running service: `GET /health?deep=true` is 200 with scheduler and worker running; an authenticated `GET /v1/status` is 200 | Booted service | None |
+| Smoke | The running service: `GET /v1/health?deep=true` is 200 with scheduler and worker running; an authenticated `GET /v1/status` is 200 | Booted service | None |
 
 Live-provider check: a separate CI job on the main branch only (never on pull requests from forks) runs the `process_post` integration test against Anthropic with a repository secret, to catch provider API drift. It is not a merge gate.
 

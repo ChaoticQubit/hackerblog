@@ -248,6 +248,7 @@ def serve(
     import uvicorn
 
     from hackerblog.api.app import ServiceSettings, create_app
+    from hackerblog.api.scheduler import discovery_poll
     from hackerblog.api.security import is_loopback
 
     state = get_state(ctx)
@@ -266,7 +267,7 @@ def serve(
     say(f"Serving on http://{bind_host}:{bind_port} (Ctrl-C to stop)")
     sys.stdout.flush()
     uvicorn.run(
-        create_app(settings),
+        create_app(settings, poll=discovery_poll(state.paths)),
         host=bind_host,
         port=bind_port,
         server_header=False,

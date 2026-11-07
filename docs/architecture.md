@@ -1498,7 +1498,7 @@ Print a ready-to-install schedule for cron mode. Option `--kind [launchd|cron|sy
 | `--no-scheduler` | off | Do not start APScheduler. |
 | `--no-worker` | off | Do not run the job worker in-process. |
 
-Starts uvicorn with the FastAPI app, applies migrations, starts the scheduler and the worker (`--concurrency 2`). Discovery is on trunk but not yet wired into `serve`, and processing has not landed, so `serve` passes no poll entry point, so `/v1/health` reports the scheduler and worker as `disabled`, and `--no-scheduler` and `--no-worker` are not registered yet. Refuses to start (exit 3) if `HACKERBLOG_API_TOKEN` is unset. Ctrl-C drains running jobs for up to 30 s, then releases them.
+Starts uvicorn with the FastAPI app, applies migrations, starts the scheduler and the worker (`--concurrency 2`). `serve` schedules one discovery poll per enabled site, the same as `hackerblog poll --no-process`, so `/v1/health` reports the scheduler as `running`. Processing has not landed, so new posts stay queued and the worker reports `disabled`, and `--no-scheduler` and `--no-worker` are not registered yet. Refuses to start (exit 3) if `HACKERBLOG_API_TOKEN` is unset. Ctrl-C drains running jobs for up to 30 s, then releases them.
 
 ### 15.4 Example session
 

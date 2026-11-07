@@ -1,11 +1,14 @@
 """APScheduler 3.11 jobs built from sites.toml, each calling the injected poll entry point."""
 
+import functools
 import importlib
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from hackerblog.core.config import Config
+from hackerblog.core.discovery import service as discovery
+from hackerblog.core.paths import Paths
 from hackerblog.core.schedule import site_cron
 
 PollFn = Callable[[Sequence[str]], Awaitable[object]]
@@ -54,6 +57,14 @@ def cron_trigger(expression: str, timezone: str | None) -> Any:
         day_of_week=weekday_field(weekday),
         **options,
     )
+
+
+def discovery_poll(paths: Paths) -> PollFn:
+    """Return the poll entry point scheduled jobs call: discovery only, recorded as scheduler.
+
+    Posts are queued, not processed, the same as `hackerblog poll --no-process`.
+    """
+    return functools.partial(discovery.poll, paths, trigger="scheduler")
 
 
 async def run_poll(poll: PollFn, slug: str) -> None:

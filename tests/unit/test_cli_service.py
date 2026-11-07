@@ -78,3 +78,29 @@ def test_schedule_show_rejects_bad_time(env: dict[str, str], value: str) -> None
 def test_schedule_show_rejects_unknown_kind(env: dict[str, str]) -> None:
     code, _ = invoke(env, "schedule", "show", "--kind", "windows")
     assert code == 2
+
+
+def test_serve_starts_the_scheduler(env: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    import httpx
+    import uvicorn
+    from fastapi import FastAPI
+
+    served: list[FastAPI] = []
+
+    def run(app: FastAPI, **_: object) -> None:
+        served.append(app)
+
+    async def health(app: FastAPI) -> str:
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as http:
+                response = await http.get("/v1/health")
+        state: str = response.json()["scheduler"]
+        return state
+
+    monkeypatch.setattr(uvicorn, "run", run)
+    code, out = invoke(env, "serve")
+    assert code == 0, out
+    assert asyncio.run(health(served[0])) == "running"

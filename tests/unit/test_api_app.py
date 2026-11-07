@@ -9,6 +9,7 @@ from hackerblog.api.app import ServiceSettings, create_app
 from hackerblog.api.security import is_loopback
 from hackerblog.core.config import Config
 from hackerblog.core.paths import resolve_paths
+from hackerblog.core.render.lesson import LESSON_CSP
 from hackerblog.core.store.migrate import connect, migrate
 
 TOKEN = "test-token-0123456789abcdef"
@@ -170,6 +171,25 @@ def test_files_serves_lesson_with_security_headers(tmp_path: Path) -> None:
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["referrer-policy"] == "no-referrer"
     assert response.headers["cross-origin-opener-policy"] == "same-origin"
+
+
+def test_files_serves_lesson_with_the_lesson_csp_so_its_script_runs(tmp_path: Path) -> None:
+    test_client = client(tmp_path)
+    write_output(tmp_path)
+    response = test_client.get("/files/site/2026-11-06-post/lesson.html")
+    assert response.status_code == 200
+    csp = response.headers["content-security-policy"]
+    assert csp.startswith(f"{LESSON_CSP}; ")
+    assert "sandbox allow-scripts" in csp and "allow-same-origin" not in csp
+
+
+def test_files_serves_other_html_with_scripts_off(tmp_path: Path) -> None:
+    test_client = client(tmp_path)
+    out = write_output(tmp_path)
+    (out / "other.html").write_text("<p>x</p>", encoding="utf-8")
+    response = test_client.get("/files/site/2026-11-06-post/other.html")
+    assert response.status_code == 200
+    assert "script-src 'none'" in response.headers["content-security-policy"]
 
 
 def test_files_serves_notes_as_plain_text(tmp_path: Path) -> None:

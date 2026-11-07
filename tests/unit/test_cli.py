@@ -44,7 +44,7 @@ def test_init_creates_home_config_secrets_and_db(env: dict[str, str], tmp_path: 
     assert "HACKERBLOG_WEBHOOK_SECRET=whsec_" in secrets
     assert "ANTHROPIC_API_KEY=\n" in secrets
     conn = sqlite3.connect(home / "hackerblog.db")
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
     assert "ANTHROPIC_API_KEY" in out
     starter = (home / "sites.toml").read_text(encoding="utf-8")
     assert "backfill_limit" not in starter

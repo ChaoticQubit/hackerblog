@@ -29,9 +29,21 @@ WRITE_CHUNK_SIZE = 64 * 1024
 HTML = "text/html; charset=utf-8"
 XML = "application/xml"
 RSS = "application/rss+xml"
-FILLER = (
+PARAGRAPHS = (
     "Discovery reads feeds, sitemaps and index pages, keeps only the links that look like "
     "posts, and stores each canonical URL once so that a second poll finds nothing new. "
+    "A conditional request with the stored ETag lets the server answer 304 Not Modified, "
+    "which costs almost nothing and tells the poller that the feed has not changed.",
+    "Every fetch goes through a guard that resolves the host first and refuses private, "
+    "loopback and link-local addresses unless the operator allows them by name. Redirects "
+    "are followed by hand, at most five times, and each hop is checked again, because an "
+    "open redirect on a public host is the classic way to reach an internal service.",
+    "Robots rules are read once per origin and cached, and a polite delay separates two "
+    "requests to the same host. A 429 or 503 answer with Retry-After pauses that origin "
+    "until the time the server asked for, so a busy blog is never hammered by retries.",
+    "Bodies are capped while they stream, so a huge page or a compressed bomb stops at the "
+    "limit instead of filling memory. The extractor then keeps the main article text, "
+    "drops navigation and comments, and counts words, so very short pages are skipped.",
 )
 ROBOTS = "User-agent: *\nDisallow: /plainblog/private/\n"
 INITIAL_POSTS = {
@@ -111,8 +123,9 @@ def _page(base_url: str, path: str, title: str, body_html: str, head: str = "") 
 
 
 def _article(base_url: str, site: str, post: Post) -> str:
-    paragraph = f"<p>{escape(post.title)}. {FILLER * 4}</p>"
-    body = f"<article>\n<h1>{escape(post.title)}</h1>\n{paragraph * 3}\n</article>"
+    paragraphs = "".join(f"<p>{escape(text)}</p>\n" for text in PARAGRAPHS)
+    lede = f"<p>{escape(post.title)}: notes from the {site} fixture blog.</p>\n"
+    body = f"<article>\n<h1>{escape(post.title)}</h1>\n{lede}{paragraphs}</article>"
     return _page(base_url, post_path(site, post.slug), post.title, body)
 
 

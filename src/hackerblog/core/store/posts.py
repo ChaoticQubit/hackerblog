@@ -14,14 +14,14 @@ LIST_LIMIT_MAX = 500
 SELECT_POSTS = (
     "SELECT p.id, s.slug, p.guid, p.url, p.canonical_url, p.title, p.author, p.published_at, "
     "p.discovered_at, p.origin, p.status, p.skip_reason, p.reading_status, p.last_error, "
-    "p.processed_at FROM posts p JOIN sites s ON s.id = p.site_id "
+    "p.processed_at, p.flags FROM posts p JOIN sites s ON s.id = p.site_id "
 )
 
 
 LIST_POSTS = """
     SELECT p.id, s.slug, p.guid, p.url, p.canonical_url, p.title, p.author, p.published_at,
            p.discovered_at, p.origin, p.status, p.skip_reason, p.reading_status, p.last_error,
-           p.processed_at
+           p.processed_at, p.flags
     FROM posts p JOIN sites s ON s.id = p.site_id
     WHERE (:sites IS NULL OR s.slug IN (SELECT value FROM json_each(:sites)))
       AND (:statuses IS NULL OR p.status IN (SELECT value FROM json_each(:statuses)))
@@ -51,6 +51,7 @@ class PostRow:
     reading_status: str
     last_error: str | None
     processed_at: str | None
+    flags: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -70,7 +71,7 @@ class PostQuery:
 
 
 def _row(values: tuple[Any, ...]) -> PostRow:
-    row = PostRow(*values)
+    row = PostRow(*values[:-1], flags=tuple(json.loads(values[-1])))
     assert row.id > 0
     assert row.canonical_url
     return row

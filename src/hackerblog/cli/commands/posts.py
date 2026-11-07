@@ -48,6 +48,7 @@ def post_json(post: PostRow) -> dict[str, object]:
         "reading_status": post.reading_status,
         "last_error": post.last_error,
         "processed_at": post.processed_at,
+        "flags": list(post.flags),
     }
 
 
@@ -110,5 +111,6 @@ def show_post(ctx: typer.Context, post_id: int, as_json: JsonFlag = False) -> No
     if as_json:
         emit_json(data)
         return
+    data["flags"] = ", ".join(post.flags) or None
     for key, value in data.items():
         say(f"{key}: {'-' if value is None else value}")

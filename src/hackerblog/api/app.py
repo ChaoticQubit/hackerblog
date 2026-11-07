@@ -1,8 +1,9 @@
 """FastAPI app factory: a thin adapter over hackerblog.core (docs/architecture.md section 16)."""
 
+import asyncio
 import logging
 import sqlite3
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Annotated, Any
@@ -30,6 +31,7 @@ from hackerblog.core.paths import Paths
 
 logger = logging.getLogger("hackerblog.api")
 Authorized = Annotated[None, Depends(require_token)]
+WORKER_DRAIN_S = 30.0
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,19 @@ def _scheduler_state(scheduler: Any) -> str:
     if scheduler is None:
         return "disabled"
     return "running" if scheduler.running else "stopped"
+
+
+def _worker_state(worker: asyncio.Task[None] | None) -> str:
+    if worker is None:
+        return "disabled"
+    return "stopped" if worker.done() else "running"
+
+
+async def _stop_worker(worker: asyncio.Task[None]) -> None:
+    worker.cancel()
+    done, _ = await asyncio.wait({worker}, timeout=WORKER_DRAIN_S)
+    if worker in done and not worker.cancelled() and worker.exception() is not None:
+        logger.error("worker.crashed", exc_info=worker.exception())
 
 
 def _database_ok(settings: ServiceSettings, deep: bool) -> bool:
@@ -95,7 +110,7 @@ def _add_routes(app: FastAPI, settings: ServiceSettings) -> None:
             "version": __version__,
             "db": "ok" if db_ok else "error",
             "scheduler": _scheduler_state(request.app.state.scheduler),
-            "worker": "disabled",
+            "worker": _worker_state(request.app.state.worker),
         }
         return JSONResponse(body, 200 if db_ok else 503)
 
@@ -132,11 +147,16 @@ def _add_routes(app: FastAPI, settings: ServiceSettings) -> None:
         )
 
 
-def create_app(settings: ServiceSettings, poll: PollFn | None = None) -> FastAPI:
+def create_app(
+    settings: ServiceSettings,
+    poll: PollFn | None = None,
+    worker: Callable[[], Coroutine[Any, Any, None]] | None = None,
+) -> FastAPI:
     """Build the ASGI app: routes, problem handlers, Trusted Host and body limit.
 
-    With poll, the lifespan starts an APScheduler job per enabled site that calls it;
-    without, the scheduler is reported as disabled.
+    With poll, the lifespan starts an APScheduler job per enabled site that calls it, and
+    with worker it runs worker() as a task, cancelled on shutdown; each absent one is
+    reported as disabled by /v1/health.
     """
 
     @asynccontextmanager
@@ -145,12 +165,17 @@ def create_app(settings: ServiceSettings, poll: PollFn | None = None) -> FastAPI
         if scheduler is not None:
             scheduler.start()
         app.state.scheduler = scheduler
+        task = None if worker is None else asyncio.create_task(worker())
+        app.state.worker = task
         try:
             yield
         finally:
             if scheduler is not None:
                 scheduler.shutdown(wait=False)
             app.state.scheduler = None
+            if task is not None:
+                await _stop_worker(task)
+            app.state.worker = None
 
     api = FastAPI(
         title="HackerBlog",
@@ -162,6 +187,7 @@ def create_app(settings: ServiceSettings, poll: PollFn | None = None) -> FastAPI
     )
     api.state.settings = settings
     api.state.scheduler = None
+    api.state.worker = None
     _add_handlers(api)
     _add_routes(api, settings)
     extra = (

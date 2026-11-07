@@ -155,6 +155,22 @@ def test_import_opml_dry_run_then_real(env: dict[str, str], tmp_path: Path) -> N
     assert len(again["existing"]) == 2
 
 
+def test_posts_show_lists_the_post_flags(env: dict[str, str]) -> None:
+    conn = connect(Path(env["HACKERBLOG_HOME"]) / "hackerblog.db")
+    try:
+        site_id = repo.ensure_adhoc_site(conn)
+        url = "https://alpha.example/post"
+        post_id, _ = repo.insert_manual_post(conn, site_id, url, url)
+        repo.set_flags(conn, post_id, ["quiz_low_variety"])
+    finally:
+        conn.close()
+    code, out = invoke(env, "posts", "show", str(post_id))
+    assert code == 0, out
+    assert "flags: quiz_low_variety" in out
+    code, out = invoke(env, "posts", "show", str(post_id), "--json")
+    assert data_of(out)["flags"] == ["quiz_low_variety"]
+
+
 def test_posts_list_empty_and_show_unknown(env: dict[str, str]) -> None:
     code, out = invoke(env, "posts", "list", "--status", "any", "--json")
     assert code == 0, out

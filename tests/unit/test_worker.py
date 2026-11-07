@@ -3,7 +3,7 @@ import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
 from tests.samples import RACE_POST_URL
@@ -87,7 +87,10 @@ def test_failure_backs_off_then_goes_dead(conn: sqlite3.Connection, tmp_path: Pa
     assert "provider answered 500" in (job.last_error or "")
     post = repo.get_post(conn, post_id)
     assert post is not None and post.status == "failed"
-    conn.execute("UPDATE jobs SET attempts = max_attempts - 1, run_after = '2000-01-01T00:00:00Z'")
+    conn.execute(
+        "UPDATE jobs SET attempts = max_attempts - 1, runs = max_attempts - 1,"
+        " run_after = '2000-01-01T00:00:00Z'"
+    )
     report = work(conn, tmp_path, FailingBackend(), race_pages())
     assert [r.state for r in report.results] == ["dead"]
     post = repo.get_post(conn, post_id)
@@ -157,6 +160,32 @@ def test_lost_lease_writes_nothing_more(conn: sqlite3.Connection, tmp_path: Path
     report = work(conn, tmp_path, Slow(), race_pages())
     assert [r.state for r in report.results] == ["lost"]
     assert job_of(conn, post_id).attempts == 2
+
+
+def test_lease_lost_while_settling_is_reported_and_the_worker_goes_on(
+    conn: sqlite3.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_process_post = pipeline.process_post
+    stolen: list[int] = []
+
+    async def then_steal(*args: Any, **kwargs: Any) -> pipeline.Outcome:
+        outcome = await real_process_post(*args, **kwargs)
+        if not stolen:
+            conn.execute("UPDATE jobs SET lease_until = '2000-01-01T00:00:00Z'")
+            other = jobs.claim(conn, datetime.now(UTC))
+            assert other is not None
+            stolen.append(other.id)
+        return outcome
+
+    monkeypatch.setattr(pipeline, "process_post", then_steal)
+    urls = [RACE_POST_URL, "https://blog.example.com/p2"]
+    pages = Pages({url: race_pages().pages[RACE_POST_URL] for url in urls})
+    first, second = (queue(conn, url) for url in urls)
+    report = work(conn, tmp_path, FakeBackend(), pages)
+    assert report.stop is None
+    assert len(report.results) == 2 and report.results[0].state == "lost"
+    assert job_of(conn, first).state == "running" and job_of(conn, first).id == stolen[0]
+    assert job_of(conn, second).state == "done"
 
 
 def test_max_jobs_and_concurrency(conn: sqlite3.Connection, tmp_path: Path) -> None:

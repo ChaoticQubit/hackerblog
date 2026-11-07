@@ -260,3 +260,23 @@ def test_defer_does_not_count_attempt(conn: sqlite3.Connection) -> None:
     assert jobs.claim(conn, until - timedelta(seconds=1)) is None
     again = jobs.claim(conn, until)
     assert again is not None and again.attempts == 1
+
+
+@pytest.mark.parametrize("give_back", ["release", "defer"])
+def test_stale_run_cannot_settle_after_give_back_and_reclaim(
+    conn: sqlite3.Connection, give_back: str
+) -> None:
+    jobs.enqueue(conn, new_post(conn), "all", T0)
+    first = jobs.claim(conn, T0)
+    assert first is not None
+    if give_back == "release":
+        jobs.release(conn, first, T0)
+    else:
+        jobs.defer(conn, first, T0, T0)
+    second = jobs.claim(conn, T0)
+    assert second is not None and second.id == first.id
+    with pytest.raises(jobs.LeaseLostError):
+        jobs.complete(conn, first, T0)
+    with pytest.raises(jobs.LeaseLostError):
+        jobs.renew_lease(conn, first, T0)
+    jobs.complete(conn, second, T0)

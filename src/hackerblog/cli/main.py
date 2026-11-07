@@ -8,6 +8,7 @@ import signal
 import sys
 import traceback
 from dataclasses import asdict
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -20,7 +21,7 @@ from hackerblog.cli.commands import sites as sites_commands
 from hackerblog.cli.commands.sites import site_line
 from hackerblog.cli.output import clean, emit_error, emit_json, say
 from hackerblog.cli.state import State, fail, get_state
-from hackerblog.core import service
+from hackerblog.core import pipeline, service, work
 from hackerblog.core.discovery import service as discovery
 from hackerblog.core.errors import ExitCode, HackerBlogError
 from hackerblog.core.logging import setup_logging
@@ -209,32 +210,44 @@ def poll(
     wait: Annotated[bool, typer.Option("--wait", help="Wait for a running poll.")] = False,
     as_json: JsonFlag = False,
 ) -> None:
-    """Discover new posts on every enabled site and queue them for processing."""
+    """Discover new posts on every enabled site, then process the queue unless --no-process."""
     state = get_state(ctx)
     try:
         report = asyncio.run(discovery.poll(state.paths, site or (), dry_run=dry_run, wait=wait))
     except HackerBlogError as error:
         fail(error, as_json)
     failed = [result for result in report.results if result.error]
-    if as_json:
-        data = {
-            "poll_run_id": report.poll_run_id,
-            "dry_run": report.dry_run,
-            "sites_ok": len(report.results) - len(failed),
-            "sites_failed": len(failed),
-            "new_posts": report.new_posts,
-            "processed": 0,
-            "sites": [asdict(result) for result in report.results],
-        }
-        emit_json(data, [f"{result.slug}: {result.error}" for result in failed])
-    else:
+    if not as_json:
         for result in report.results:
             say(site_line(result))
+    worked = pipeline.WorkReport([])
+    if not (dry_run or no_process):
+        try:
+            worked = process.process_queue(state.paths, as_json)
+        except HackerBlogError as error:
+            fail(error, as_json)
+    data = {
+        "poll_run_id": report.poll_run_id,
+        "dry_run": report.dry_run,
+        "sites_ok": len(report.results) - len(failed),
+        "sites_failed": len(failed),
+        "new_posts": report.new_posts,
+        "sites": [asdict(result) for result in report.results],
+    } | process.work_json(worked)
+    if worked.stop is not None:
+        fail(worked.stop, as_json, data)
+    if as_json:
+        emit_json(data, [f"{result.slug}: {result.error}" for result in failed])
+    else:
         prefix = "dry run: " if report.dry_run else ""
         count = len(report.results)
-        say(f"{prefix}{count} sites polled, {report.new_posts} new, {len(failed)} failed")
-    if report.code != ExitCode.OK:
-        raise typer.Exit(int(report.code))
+        say(
+            f"{prefix}{count} sites polled, {report.new_posts} new, {len(failed)} failed, "
+            f"{len(worked.results)} processed, {worked.tokens / 1000:.1f}k tokens"
+        )
+    code = report.code if report.code != ExitCode.OK else process.work_code(worked)
+    if code != ExitCode.OK:
+        raise typer.Exit(int(code))
 
 
 ScheduleKind = Literal["launchd", "cron", "systemd"]
@@ -247,8 +260,14 @@ def serve(
     ctx: typer.Context,
     host: Annotated[str | None, typer.Option("--host", help="Bind address.")] = None,
     port: Annotated[int | None, typer.Option("--port", min=1, max=65535)] = None,
+    no_scheduler: Annotated[
+        bool, typer.Option("--no-scheduler", help="Do not schedule discovery polls.")
+    ] = False,
+    no_worker: Annotated[
+        bool, typer.Option("--no-worker", help="Do not process queued posts in-process.")
+    ] = False,
 ) -> None:
-    """Run the HTTP API on 127.0.0.1 by default. Needs HACKERBLOG_API_TOKEN."""
+    """Run the API, scheduler and worker on 127.0.0.1 by default. Needs HACKERBLOG_API_TOKEN."""
     import uvicorn
 
     from hackerblog.api.app import ServiceSettings, create_app
@@ -256,6 +275,7 @@ def serve(
     from hackerblog.api.security import is_loopback
 
     state = get_state(ctx)
+    paths = state.paths
     try:
         config, token = service.service_config(state.paths, os.environ)
     except HackerBlogError as error:
@@ -271,7 +291,11 @@ def serve(
     say(f"Serving on http://{bind_host}:{bind_port} (Ctrl-C to stop)")
     sys.stdout.flush()
     uvicorn.run(
-        create_app(settings, poll=discovery_poll(state.paths)),
+        create_app(
+            settings,
+            poll=None if no_scheduler else discovery_poll(state.paths),
+            worker=None if no_worker else partial(work.keep_working, paths, process.load_backend()),
+        ),
         host=bind_host,
         port=bind_port,
         server_header=False,

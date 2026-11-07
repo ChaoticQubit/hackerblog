@@ -38,7 +38,8 @@ EXPIRE_SQL = (
     " AND attempts >= max_attempts RETURNING post_id"
 )
 CLAIM_SQL = (
-    "UPDATE jobs SET state = 'running', attempts = attempts + 1, lease_until = :lease,"
+    "UPDATE jobs SET state = 'running', attempts = attempts + 1, runs = runs + 1,"
+    " lease_until = :lease,"
     " updated_at = :now WHERE id = (SELECT id FROM jobs"
     " WHERE (state = 'pending' AND run_after <= :now)"
     " OR (state = 'running' AND lease_until < :now AND attempts < max_attempts)"
@@ -48,7 +49,10 @@ CLAIM_SQL = (
 
 @dataclass(frozen=True)
 class Job:
-    """One jobs row. Times are UTC ISO-8601 strings ending in Z."""
+    """One jobs row. Times are UTC ISO-8601 strings ending in Z.
+
+    runs counts every claim and never goes back; it fences a run's settle calls.
+    """
 
     id: int
     kind: str
@@ -63,6 +67,7 @@ class Job:
     last_error: str | None
     created_at: str
     updated_at: str
+    runs: int
 
 
 def get_job(conn: sqlite3.Connection, job_id: int) -> Job | None:
@@ -100,7 +105,7 @@ def enqueue(conn: sqlite3.Connection, post_id: int, stage: str, now: datetime) -
 def claim(conn: sqlite3.Connection, now: datetime, lease_s: int = LEASE_S) -> Job | None:
     """Atomically take the next due pending job, or a running one whose lease expired.
 
-    Counts an attempt and sets the lease. A running job whose lease expired on its last
+    Counts an attempt and a run and sets the lease. A running job whose lease expired on its last
     attempt goes dead with its post instead. Returns None when nothing is due.
     """
     assert lease_s > 0
@@ -122,15 +127,16 @@ class LeaseLostError(Exception):
     """The job is no longer this run's: its lease expired and it was reclaimed, or it finished."""
 
 
-FENCE = " WHERE id = ? AND state = 'running' AND attempts = ?"
+FENCE = " WHERE id = ? AND state = 'running' AND runs = ?"
 
 
 def _fenced(conn: sqlite3.Connection, job: Job, sql: str, params: tuple[object, ...]) -> None:
-    assert job.state == "running" and job.attempts >= 1, f"job {job.id} was not claimed"
+    assert job.state == "running", f"job {job.id} was not claimed"
+    assert job.runs >= job.attempts >= 1, f"job {job.id} run counter behind attempts"
     assert sql.startswith("UPDATE jobs SET ") and sql.endswith(FENCE)
-    cur = conn.execute(sql, (*params, job.id, job.attempts))
+    cur = conn.execute(sql, (*params, job.id, job.runs))
     if cur.rowcount == 0:
-        raise LeaseLostError(f"job {job.id} attempt {job.attempts} lost its lease")
+        raise LeaseLostError(f"job {job.id} run {job.runs} lost its lease")
     assert cur.rowcount == 1
 
 
@@ -142,7 +148,7 @@ def renew_lease(conn: sqlite3.Connection, job: Job, now: datetime, lease_s: int 
         conn,
         job,
         "UPDATE jobs SET lease_until = ?, updated_at = ?"
-        " WHERE id = ? AND state = 'running' AND attempts = ?",
+        " WHERE id = ? AND state = 'running' AND runs = ?",
         (lease, iso(now)),
     )
 
@@ -153,7 +159,7 @@ def complete(conn: sqlite3.Connection, job: Job, now: datetime) -> None:
         conn,
         job,
         "UPDATE jobs SET state = 'done', lease_until = NULL, updated_at = ?"
-        " WHERE id = ? AND state = 'running' AND attempts = ?",
+        " WHERE id = ? AND state = 'running' AND runs = ?",
         (iso(now),),
     )
 
@@ -176,7 +182,7 @@ def defer(conn: sqlite3.Connection, job: Job, until: datetime, now: datetime) ->
         conn,
         job,
         "UPDATE jobs SET state = 'pending', attempts = attempts - 1, lease_until = NULL,"
-        " run_after = ?, updated_at = ? WHERE id = ? AND state = 'running' AND attempts = ?",
+        " run_after = ?, updated_at = ? WHERE id = ? AND state = 'running' AND runs = ?",
         (iso(until), iso(now)),
     )
 
@@ -193,7 +199,7 @@ def fail(conn: sqlite3.Connection, job: Job, error: str, now: datetime) -> str:
         conn,
         job,
         "UPDATE jobs SET state = ?, run_after = ?, lease_until = NULL, last_error = ?,"
-        " updated_at = ? WHERE id = ? AND state = 'running' AND attempts = ?",
+        " updated_at = ? WHERE id = ? AND state = 'running' AND runs = ?",
         (state, iso(now + delay), error, iso(now)),
     )
     return state

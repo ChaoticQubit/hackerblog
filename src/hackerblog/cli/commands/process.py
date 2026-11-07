@@ -1,15 +1,18 @@
-"""Processing commands: work, regenerate and render (docs/architecture.md section 15.3)."""
+"""Processing commands: work, process, backfill, regenerate and render (section 15.3)."""
 
 import asyncio
 import importlib
 import sqlite3
+import webbrowser
 from collections import Counter
+from datetime import date
+from pathlib import Path
 from typing import Annotated, Literal, cast
 
 import typer
 
 from hackerblog.cli.output import emit_error, emit_json, say
-from hackerblog.core import pipeline
+from hackerblog.core import pipeline, work
 from hackerblog.core.errors import ExitCode, HackerBlogError
 from hackerblog.core.paths import Paths
 from hackerblog.core.store import repo
@@ -62,12 +65,49 @@ def _job_json(result: pipeline.JobResult) -> dict[str, object]:
     }
 
 
-def _work_code(report: pipeline.WorkReport) -> ExitCode:
+def work_code(report: pipeline.WorkReport) -> ExitCode:
+    """OK when no job failed, PARTIAL when some did, FAILED when all did."""
     states = Counter(result.state for result in report.results)
     failed = sum(states[state] for state in FAILED_STATES)
     if failed == 0:
         return ExitCode.OK
     return ExitCode.PARTIAL if failed < len(report.results) else ExitCode.FAILED
+
+
+def process_queue(
+    paths: Paths,
+    as_json: bool,
+    *,
+    max_jobs: int | None = None,
+    concurrency: int = 2,
+    forever: bool = False,
+) -> pipeline.WorkReport:
+    """Run due jobs with the real fetcher, printing a line per job unless as_json.
+
+    Raises HackerBlogError when the config, database or LLM settings are not usable.
+    """
+
+    def progress(result: pipeline.JobResult) -> None:
+        if not as_json:
+            detail = f" ({result.detail})" if result.detail and result.state != "ready" else ""
+            say(f"job {result.job_id}  post {result.post_id}  {result.state}{detail}")
+
+    return asyncio.run(
+        work.run_queue(
+            paths,
+            load_backend(),
+            max_jobs=max_jobs,
+            concurrency=concurrency,
+            forever=forever,
+            on_result=progress,
+        )
+    )
+
+
+def work_json(report: pipeline.WorkReport) -> dict[str, object]:
+    """The JSON fields every processing command reports: jobs, processed and tokens."""
+    jobs_json = [_job_json(result) for result in report.results]
+    return {"jobs": jobs_json, "processed": len(jobs_json), "tokens": report.tokens}
 
 
 def work_command(
@@ -82,42 +122,107 @@ def work_command(
     """Run the job worker without discovery until the queue is empty."""
     paths = _paths(ctx)
     try:
-        conn = _open_db(paths)
-        settings = pipeline.load_settings(paths, need_llm=True)
-        backend = load_backend()
+        report = process_queue(
+            paths, as_json, max_jobs=max_jobs, concurrency=concurrency, forever=forever
+        )
     except HackerBlogError as error:
         _fail(error, as_json)
         return
-
-    def progress(result: pipeline.JobResult) -> None:
-        if not as_json:
-            detail = f" ({result.detail})" if result.detail and result.state != "ready" else ""
-            say(f"job {result.job_id}  post {result.post_id}  {result.state}{detail}")
-
-    report = asyncio.run(
-        pipeline.run_worker(
-            conn,
-            settings,
-            backend,
-            fetcher=None,
-            max_jobs=max_jobs,
-            concurrency=concurrency,
-            forever=forever,
-            on_result=progress,
-        )
-    )
-    jobs_json = [_job_json(result) for result in report.results]
     if report.stop is not None:
-        _fail(report.stop, as_json, {"jobs": jobs_json, "tokens": report.tokens})
+        _fail(report.stop, as_json, work_json(report))
     if as_json:
-        emit_json({"jobs": jobs_json, "tokens": report.tokens})
+        emit_json(work_json(report))
     elif not report.results:
         say("No jobs are due.")
     else:
         states = Counter(result.state for result in report.results)
         counts = ", ".join(f"{count} {state}" for state, count in sorted(states.items()))
         say(f"{len(report.results)} jobs: {counts}; {_tokens(report.tokens)}")
-    raise typer.Exit(int(_work_code(report)))
+    raise typer.Exit(int(work_code(report)))
+
+
+def process_command(
+    ctx: typer.Context,
+    url: Annotated[str, typer.Argument(metavar="URL")],
+    site: Annotated[str | None, typer.Option("--site", metavar="SLUG")] = None,
+    force: Annotated[bool, typer.Option("--force", help="Bypass the LLM cache.")] = False,
+    open_lesson: Annotated[bool, typer.Option("--open", help="Open the lesson.")] = False,
+    no_wait: Annotated[bool, typer.Option("--no-wait", help="Queue only.")] = False,
+    as_json: JsonFlag = False,
+) -> None:
+    """Process one post URL now, matched to a site by host or filed under adhoc."""
+    paths = _paths(ctx)
+    try:
+        done = asyncio.run(
+            work.process_url(paths, load_backend(), url, site=site, force=force, wait=not no_wait)
+        )
+        conn = _open_db(paths)
+    except HackerBlogError as error:
+        _fail(error, as_json)
+        return
+    try:
+        lesson = _lesson_path(conn, done.post_id)
+    finally:
+        conn.close()
+    status = "queued" if done.outcome is None else done.outcome.status
+    tokens = 0 if done.outcome is None else done.outcome.tokens
+    if as_json:
+        data = {"post_id": done.post_id, "site": done.site, "status": status}
+        emit_json(data | {"tokens": tokens, "lesson": lesson})
+    else:
+        say(f"Post {done.post_id} {status} ({_tokens(tokens)}): {lesson or ''}")
+    if open_lesson and lesson is not None:
+        webbrowser.open(Path(lesson).as_uri())
+
+
+def _amount(tokens: int) -> str:
+    assert tokens >= 0
+    return f"{tokens / 1_000_000:.1f}M" if tokens >= 1_000_000 else f"{tokens // 1000}k"
+
+
+def backfill_command(
+    ctx: typer.Context,
+    slug: Annotated[str, typer.Argument(metavar="SLUG")],
+    limit: Annotated[int | None, typer.Option("--limit", min=1)] = None,
+    since: Annotated[str | None, typer.Option("--since", help="YYYY-MM-DD.")] = None,
+    no_process: Annotated[bool, typer.Option("--no-process", help="Queue only.")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Write nothing.")] = False,
+    wait: Annotated[bool, typer.Option("--wait", help="Wait for a running poll.")] = False,
+    as_json: JsonFlag = False,
+) -> None:
+    """Discover a site, then queue its older posts up to the limit and process them."""
+    if since is not None:
+        try:
+            date.fromisoformat(since)
+        except ValueError:
+            raise typer.BadParameter("use YYYY-MM-DD", param_hint="--since") from None
+    paths = _paths(ctx)
+    try:
+        plan = asyncio.run(
+            work.backfill(paths, slug, limit=limit, since=since, dry_run=dry_run, wait=wait)
+        )
+    except HackerBlogError as error:
+        _fail(error, as_json)
+        return
+    if not as_json:
+        verb = "Would queue" if dry_run else "Queuing"
+        say(f"{verb} {len(plan.queued)} posts, estimated {_amount(plan.estimate_tokens)} tokens.")
+    report = pipeline.WorkReport([])
+    if not (dry_run or no_process):
+        try:
+            report = process_queue(paths, as_json)
+        except HackerBlogError as error:
+            _fail(error, as_json)
+            return
+    data = {"queued": plan.queued, "estimate_tokens": plan.estimate_tokens} | work_json(report)
+    if report.stop is not None:
+        _fail(report.stop, as_json, data)
+    if as_json:
+        emit_json(data)
+    elif report.results:
+        say(f"{len(report.results)} processed; {_tokens(report.tokens)}")
+    code = plan.discovery.code if plan.discovery.code != ExitCode.OK else work_code(report)
+    raise typer.Exit(int(code))
 
 
 def regenerate_command(
@@ -196,7 +301,9 @@ def render_command(
 
 
 def register(app: typer.Typer) -> None:
-    """Add work, regenerate and render to the root app."""
+    """Add work, process, backfill, regenerate and render to the root app."""
     app.command("work")(work_command)
+    app.command("process")(process_command)
+    app.command("backfill")(backfill_command)
     app.command("regenerate")(regenerate_command)
     app.command("render")(render_command)

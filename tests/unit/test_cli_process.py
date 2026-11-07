@@ -129,17 +129,6 @@ def test_work_runs_queued_render_jobs(
     assert data["tokens"] == 0
 
 
-def test_work_stops_on_a_fetch_job_this_build_cannot_run(
-    env: dict[str, str], conn: sqlite3.Connection, backend: FakeBackend
-) -> None:
-    post_id = add_post(conn)
-    jobs.enqueue(conn, post_id, "all", datetime.now(UTC))
-    code, out = invoke(env, "work")
-    assert code == 1, out
-    job = jobs.get_job(conn, 1)
-    assert job is not None and job.state == "pending" and job.attempts == 0
-
-
 def test_work_concurrency_is_bounded(env: dict[str, str], backend: FakeBackend) -> None:
     code, _ = invoke(env, "work", "--concurrency", "9")
     assert code == 2

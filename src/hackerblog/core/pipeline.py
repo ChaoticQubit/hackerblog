@@ -6,6 +6,7 @@ run_worker claims process_post jobs and feeds them through process_post.
 """
 
 import asyncio
+import contextlib
 import os
 import sqlite3
 from collections.abc import Callable, Mapping
@@ -583,6 +584,8 @@ async def run_job(
 ) -> JobResult:
     """Run one claimed process_post job and settle it: done, failed, dead or deferred.
 
+    A lease lost to another worker, while running or while settling, returns state "lost".
+
     Raises HackerBlogError (after releasing the job) when the environment, not the post, is
     at fault: a rejected provider key, or a page fetch this build cannot make.
     """
@@ -594,38 +597,43 @@ async def run_job(
         raise HackerBlogError(
             ExitCode.INTERNAL, "page fetching is not available in this build", "hackerblog -vv"
         )
+    lost = JobResult(job.id, post_id, "lost", 0, "lease lost to another worker")
     try:
-        outcome = await process_post(
-            conn,
-            post_id,
-            settings,
-            backend,
-            fetcher=fetcher if job.stage == "all" else None,
-            stage=_job_stage(job.stage),
-            force=job.stage == "lesson",
-            heartbeat=lambda: jobs.renew_lease(conn, job, _utc()),
-        )
-    except jobs.LeaseLostError:
-        return JobResult(job.id, post_id, "lost", 0, "lease lost to another worker")
-    except BudgetExhaustedError as stop:
-        jobs.defer(conn, job, stop.until, _utc())
-        return JobResult(job.id, post_id, "deferred", 0, str(stop))
-    except HackerBlogError as error:
-        if error.code == ExitCode.LLM_AUTH:
-            jobs.release(conn, job, _utc())
-            repo.set_post_status(conn, post_id, "queued", error=_error_text(error))
+        try:
+            outcome = await process_post(
+                conn,
+                post_id,
+                settings,
+                backend,
+                fetcher=fetcher if job.stage == "all" else None,
+                stage=_job_stage(job.stage),
+                force=job.stage == "lesson",
+                heartbeat=lambda: jobs.renew_lease(conn, job, _utc()),
+            )
+        except jobs.LeaseLostError:
+            return lost
+        except BudgetExhaustedError as stop:
+            jobs.defer(conn, job, stop.until, _utc())
+            return JobResult(job.id, post_id, "deferred", 0, str(stop))
+        except HackerBlogError as error:
+            if error.code == ExitCode.LLM_AUTH:
+                jobs.release(conn, job, _utc())
+                repo.set_post_status(conn, post_id, "queued", error=_error_text(error))
+                raise
+            if error.code == ExitCode.BLOCKED:
+                jobs.complete(conn, job, _utc())
+                repo.set_post_status(conn, post_id, "skipped", skip_reason="blocked")
+                return JobResult(job.id, post_id, "skipped", 0, _error_text(error))
+            return _failed(conn, job, error)
+        except (ValueError, OSError) as error:
+            return _failed(conn, job, error)
+        except BaseException:
+            with contextlib.suppress(jobs.LeaseLostError):
+                jobs.release(conn, job, _utc())
             raise
-        if error.code == ExitCode.BLOCKED:
-            repo.set_post_status(conn, post_id, "skipped", skip_reason="blocked")
-            jobs.complete(conn, job, _utc())
-            return JobResult(job.id, post_id, "skipped", 0, _error_text(error))
-        return _failed(conn, job, error)
-    except (ValueError, OSError) as error:
-        return _failed(conn, job, error)
-    except BaseException:
-        jobs.release(conn, job, _utc())
-        raise
-    jobs.complete(conn, job, _utc())
+        jobs.complete(conn, job, _utc())
+    except jobs.LeaseLostError:
+        return lost
     return JobResult(job.id, post_id, outcome.status, outcome.tokens, outcome.reason)
 
 

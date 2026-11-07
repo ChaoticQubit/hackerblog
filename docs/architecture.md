@@ -1498,7 +1498,7 @@ Print a ready-to-install schedule for cron mode. Option `--kind [launchd|cron|sy
 | `--no-scheduler` | off | Do not start APScheduler. |
 | `--no-worker` | off | Do not run the job worker in-process. |
 
-Starts uvicorn with the FastAPI app, applies migrations, starts the scheduler and the worker (`--concurrency 2`). `serve` schedules one discovery poll per enabled site, the same as `hackerblog poll --no-process`, so `/v1/health` reports the scheduler as `running`. Processing has not landed, so new posts stay queued and the worker reports `disabled`, and `--no-scheduler` and `--no-worker` are not registered yet. Refuses to start (exit 3) if `HACKERBLOG_API_TOKEN` is unset. Ctrl-C drains running jobs for up to 30 s, then releases them.
+Starts uvicorn with the FastAPI app, applies migrations, starts the scheduler and the worker (`--concurrency 2`). The scheduler runs one discovery poll per enabled site, the same as `hackerblog poll --no-process`, and the in-process worker processes what it queues, so `/v1/health` reports both as `running`. A worker stop such as the daily budget pauses it for 60 s instead of ending it; a worker that crashed is reported as `stopped`. Refuses to start (exit 3) if `HACKERBLOG_API_TOKEN` is unset. Ctrl-C cancels the worker, which releases its running jobs, waiting up to 30 s.
 
 ### 15.4 Example session
 
@@ -1589,7 +1589,7 @@ FastAPI app in `hackerblog.api.app`, served by `hackerblog serve`. The OpenAPI c
 
 | Method and path | Purpose | Request | Response |
 |---|---|---|---|
-| `GET /v1/health` | Liveness and smoke check, no token | `?deep=true` also runs a write probe (`BEGIN IMMEDIATE` then rollback) | `200 {"status": "ok", "version", "db": "ok", "scheduler": "running\|disabled", "worker": "running\|disabled"}` or `503` |
+| `GET /v1/health` | Liveness and smoke check, no token | `?deep=true` also runs a write probe (`BEGIN IMMEDIATE` then rollback) | `200 {"status": "ok", "version", "db": "ok", "scheduler": "running\|disabled", "worker": "running\|stopped\|disabled"}` or `503` |
 | `GET /v1/status` | Same data as `hackerblog status` | | `Status` |
 | `GET /v1/sites` | List sites | `?all=true` | `[Site]` |
 | `GET /v1/sites/{slug}` | One site | | `SiteDetail` |

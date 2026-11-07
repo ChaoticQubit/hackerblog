@@ -2,11 +2,16 @@
 
 from pathlib import Path
 
-LESSON_CSP = (
-    "default-src 'none'; script-src 'none'; style-src 'none'; img-src data:; font-src data:; "
-    "connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'; "
-    "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox"
+from hackerblog.core.render.lesson import LESSON_CSP
+
+LESSON_FRAMING = (
+    "frame-ancestors 'self'; sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox"
 )
+HTML_CSP = (
+    "default-src 'none'; script-src 'none'; style-src 'none'; img-src data:; font-src data:; "
+    f"connect-src 'none'; form-action 'none'; base-uri 'none'; {LESSON_FRAMING}"
+)
+SERVED_LESSON_CSP = f"{LESSON_CSP}; {LESSON_FRAMING}"
 OTHER_CSP = "default-src 'none'; frame-ancestors 'none'; sandbox"
 MEDIA_TYPES = {".html": "text/html", ".md": "text/plain", ".json": "application/json"}
 COMMON_HEADERS = {
@@ -42,9 +47,15 @@ def resolve_output_file(root: Path, relative: str) -> Path | None:
 
 
 def file_headers(path: Path) -> dict[str, str]:
-    """Return the security headers for path: lesson CSP and same-origin framing for HTML."""
-    if path.suffix == ".html":
-        framing = {"Content-Security-Policy": LESSON_CSP, "X-Frame-Options": "SAMEORIGIN"}
+    """Return the security headers for path: same-origin framing for HTML.
+
+    lesson.html gets the render LESSON_CSP, so its hash-pinned script runs, in a sandbox
+    without same-origin; other HTML runs no script; other files get a deny-all policy.
+    """
+    if path.name == "lesson.html":
+        framing = {"Content-Security-Policy": SERVED_LESSON_CSP, "X-Frame-Options": "SAMEORIGIN"}
+    elif path.suffix == ".html":
+        framing = {"Content-Security-Policy": HTML_CSP, "X-Frame-Options": "SAMEORIGIN"}
     else:
         framing = {"Content-Security-Policy": OTHER_CSP, "X-Frame-Options": "DENY"}
     return {**COMMON_HEADERS, **framing, "Cache-Control": "no-store"}

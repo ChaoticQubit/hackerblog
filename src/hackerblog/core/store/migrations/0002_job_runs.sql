@@ -1,0 +1,2 @@
+ALTER TABLE jobs ADD COLUMN runs INTEGER NOT NULL DEFAULT 0;
+UPDATE jobs SET runs = attempts;

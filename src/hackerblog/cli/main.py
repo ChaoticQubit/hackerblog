@@ -18,7 +18,7 @@ from hackerblog.cli.commands import posts as posts_commands
 from hackerblog.cli.commands import process, study
 from hackerblog.cli.commands import sites as sites_commands
 from hackerblog.cli.commands.sites import site_line
-from hackerblog.cli.output import clean, emit_json, say
+from hackerblog.cli.output import clean, emit_error, emit_json, say
 from hackerblog.cli.state import State, fail, get_state
 from hackerblog.core import service
 from hackerblog.core.discovery import service as discovery
@@ -353,10 +353,17 @@ def _interrupted(signum: int, frame: object) -> None:
 
 
 def run() -> None:
-    """Console entry point: maps Ctrl-C to 130 and unexpected errors to exit code 1."""
+    """Console entry point: maps Ctrl-C to 130 and unexpected errors to exit code 1.
+
+    A HackerBlogError no command caught is reported like fail() does and exits with its own
+    code, so no `Error:` line ever ends with exit 0 or the generic internal code.
+    """
     signal.signal(signal.SIGINT, _interrupted)
     try:
         app()
+    except HackerBlogError as error:
+        emit_error(error, "--json" in sys.argv[1:])
+        sys.exit(int(error.code))
     except Exception as error:
         sys.stderr.write(f"Internal error: {clean(str(error))}\n")
         if "-vv" in sys.argv:

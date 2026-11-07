@@ -2,7 +2,12 @@ import re
 
 from markdown_it import MarkdownIt
 
-from hackerblog.core.render.sanitize import clean_markdown, markdown_html, strip_markdown_html
+from hackerblog.core.render.sanitize import (
+    clean_markdown,
+    markdown_html,
+    plain,
+    strip_markdown_html,
+)
 
 
 def test_markdown_html_keeps_allowed_structure() -> None:
@@ -104,3 +109,17 @@ def test_escape_fallback_leaves_no_links_outside_code() -> None:
     out = clean_markdown(text, escape=True)
     assert link_targets(out) == []
     assert "`[c](d)`" in out
+
+
+def test_plain_leaves_no_link_in_one_line_fields() -> None:
+    probes = [
+        "[x](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)",
+        "[x](javascript&#58;alert(1))",
+        "see [x](javascript&#58;alert(1)) and ![i](data:image/svg+xml,<svg/onload=alert(1)>)",
+        "<javascript&#58;alert(1)> <data:text/html,x>",
+        "[x] [x]: data:text/html,x",
+    ]
+    for probe in probes:
+        out = plain(probe)
+        assert link_targets(out) == [], (probe, out)
+        assert "\n" not in out

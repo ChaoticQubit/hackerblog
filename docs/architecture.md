@@ -1390,7 +1390,7 @@ Run the job worker without discovery.
 | Option | Default | Meaning |
 |---|---|---|
 | `--site SLUG` | all | Repeatable. |
-| `--status [ready\|queued\|failed\|dead\|skipped\|...]` | `ready` | Pipeline status filter; `any` for all. |
+| `--status [ready\|queued\|failed\|dead\|skipped\|...]` | every status but `skipped` | Pipeline status filter; `any` for all. |
 | `--unread` | off | Shortcut for reading status `unread`. |
 | `--reading [unread\|read\|learned\|archived]` | not archived | |
 | `--since DATE` | none | Published on or after. |

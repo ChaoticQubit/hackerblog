@@ -1,7 +1,7 @@
 """`hackerblog posts`: list and show discovered posts (section 15.3)."""
 
 from datetime import date
-from typing import Annotated, Literal
+from typing import Annotated, Literal, get_args
 
 import typer
 
@@ -28,6 +28,7 @@ Status = Literal[
 ]
 Reading = Literal["unread", "read", "learned", "archived"]
 NOT_ARCHIVED = ("unread", "read", "learned")
+NOT_SKIPPED = tuple(s for s in get_args(Status) if s not in ("any", "skipped"))
 
 
 def post_json(post: PostRow) -> dict[str, object]:
@@ -54,14 +55,16 @@ def post_json(post: PostRow) -> dict[str, object]:
 def list_posts(
     ctx: typer.Context,
     site: Annotated[list[str] | None, typer.Option("--site", help="Repeatable.")] = None,
-    status: Annotated[Status, typer.Option("--status")] = "ready",
+    status: Annotated[
+        Status | None, typer.Option("--status", help="Default: every status but skipped.")
+    ] = None,
     unread: Annotated[bool, typer.Option("--unread")] = False,
     reading: Annotated[Reading | None, typer.Option("--reading")] = None,
     since: Annotated[str | None, typer.Option("--since", help="YYYY-MM-DD.")] = None,
     limit: Annotated[int, typer.Option("--limit", min=1, max=500)] = 20,
     as_json: JsonFlag = False,
 ) -> None:
-    """List posts, newest first; ready and not archived by default."""
+    """List posts, newest first; every status but skipped, not archived, by default."""
     if since is not None:
         try:
             date.fromisoformat(since)
@@ -70,7 +73,7 @@ def list_posts(
     readings = ("unread",) if unread else (reading,) if reading else NOT_ARCHIVED
     query = PostQuery(
         sites=tuple(site or ()),
-        statuses=None if status == "any" else (status,),
+        statuses=NOT_SKIPPED if status is None else None if status == "any" else (status,),
         readings=readings,
         since=since,
         limit=limit,

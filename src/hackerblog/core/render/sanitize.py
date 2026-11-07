@@ -217,6 +217,10 @@ def strip_markdown_html(text: str) -> str:
 
 
 def plain(text: str) -> str:
-    """Return one-line plain text for Markdown output: HTML tags and script schemes removed."""
-    cleaned = UNSAFE_SCHEME.sub("", HTML_TAG.sub("", text))
+    """Return one-line plain text for Markdown output.
+
+    HTML tags and script schemes are removed and `[`, `]` and `<` are backslash-escaped, so no
+    link, image or autolink can form whatever its target.
+    """
+    cleaned = UNSAFE_SCHEME.sub("", _escape_links(HTML_TAG.sub("", text)))
     return " ".join(cleaned.split())

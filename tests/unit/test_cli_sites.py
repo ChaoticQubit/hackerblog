@@ -9,6 +9,8 @@ import pytest
 from typer.testing import CliRunner
 
 from hackerblog.cli.main import app
+from hackerblog.core.store import repo
+from hackerblog.core.store.migrate import connect
 
 runner = CliRunner()
 
@@ -200,3 +202,26 @@ def test_import_opml_refuses_files_over_5_mib(env: dict[str, str], tmp_path: Pat
     assert code == 2, out
     assert "larger than 5 MiB" in out
     assert sites_in(env) == []
+
+
+def test_posts_list_shows_every_status_but_skipped_by_default(env: dict[str, str]) -> None:
+    conn = connect(Path(env["HACKERBLOG_HOME"]) / "hackerblog.db")
+    site_id = repo.ensure_adhoc_site(conn)
+    for status in ("discovered", "queued", "ready", "failed", "skipped"):
+        url = f"https://posts.example/{status}"
+        post_id, _ = repo.insert_manual_post(conn, site_id, url, url)
+        conn.execute("UPDATE posts SET status = ? WHERE id = ?", (status, post_id))
+    conn.commit()
+    conn.close()
+    code, out = invoke(env, "posts", "list", "--json")
+    assert code == 0, out
+    assert sorted(post["status"] for post in data_of(out)) == [
+        "discovered",
+        "failed",
+        "queued",
+        "ready",
+    ]
+    code, out = invoke(env, "posts", "list", "--status", "skipped", "--json")
+    assert [post["status"] for post in data_of(out)] == ["skipped"]
+    code, out = invoke(env, "posts", "list", "--status", "any", "--json")
+    assert len(data_of(out)) == 5

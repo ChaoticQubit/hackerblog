@@ -2,7 +2,7 @@ import asyncio
 import json
 import threading
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -26,6 +26,7 @@ class FakeProvider:
         default_factory=list[tuple[int, dict[str, Any]]]
     )
     requests: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
+    paths: list[str] = field(default_factory=list[str])
     url: str = ""
 
 
@@ -52,6 +53,20 @@ def completion(
     }
 
 
+def ollama_chat(
+    content: str, prompt_tokens: int = 100, completion_tokens: int = 50
+) -> tuple[int, dict[str, Any]]:
+    return 200, {
+        "model": "fake",
+        "created_at": "2026-11-07T00:00:00Z",
+        "message": {"role": "assistant", "content": content},
+        "done": True,
+        "done_reason": "stop",
+        "prompt_eval_count": prompt_tokens,
+        "eval_count": completion_tokens,
+    }
+
+
 def error(status: int, message: str) -> tuple[int, dict[str, Any]]:
     return status, {"error": {"message": message, "type": "error", "code": str(status)}}
 
@@ -64,6 +79,7 @@ def provider() -> Iterator[FakeProvider]:
         def do_POST(self) -> None:
             length = int(self.headers["Content-Length"])
             state.requests.append(json.loads(self.rfile.read(length)))
+            state.paths.append(self.path)
             status, body = state.replies.pop(0) if state.replies else error(500, "no reply queued")
             payload = json.dumps(body).encode()
             self.send_response(status)
@@ -94,6 +110,10 @@ def settings_for(provider: FakeProvider) -> LLMSettings:
         request_timeout_seconds=10,
         max_input_tokens=24_000,
     )
+
+
+def ollama_settings(provider: FakeProvider) -> LLMSettings:
+    return replace(settings_for(provider), provider="ollama", api_key=None)
 
 
 def context() -> PostContext:
@@ -261,3 +281,42 @@ def test_one_broken_item_among_five_is_accepted_without_retry(provider: FakeProv
     result = asyncio.run(generate_lesson(context(), digest, settings_for(provider)))
     assert len(result.value.final_quiz) == 5
     assert len(provider.requests) == 1
+
+
+def test_ollama_uses_the_native_chat_api_with_a_context_window_for_input_and_output(
+    provider: FakeProvider,
+) -> None:
+    provider.replies.append(ollama_chat(json.dumps(digest_data()), 321, 123))
+    provider.replies.append(ollama_chat(json.dumps(lesson_data())))
+    settings = ollama_settings(provider)
+    digest = asyncio.run(generate_digest(context(), settings))
+    asyncio.run(generate_lesson(context(), digest.value, settings))
+    assert digest.value == PostDigest.model_validate(digest_data())
+    assert (digest.input_tokens, digest.output_tokens) == (321, 123)
+    assert provider.paths == ["/api/chat", "/api/chat"]
+    first, second = (request["options"] for request in provider.requests)
+    assert first["num_ctx"] == second["num_ctx"]
+    assert first["num_ctx"] >= settings.max_input_tokens + 4000 + 8000
+    assert (first["num_predict"], second["num_predict"]) == (4000, 8000)
+    assert provider.requests[0]["model"] == "fake-notes"
+
+
+@pytest.mark.parametrize(("status", "code"), [(404, ExitCode.LLM_AUTH), (500, ExitCode.FAILED)])
+def test_ollama_errors_map_to_provider_exit_codes(
+    provider: FakeProvider, status: int, code: ExitCode
+) -> None:
+    provider.replies.append((status, {"error": f"model fake-notes failed {status}"}))
+    with pytest.raises(HackerBlogError) as caught:
+        asyncio.run(generate_digest(context(), ollama_settings(provider)))
+    assert caught.value.code == code
+    assert provider.paths == ["/api/chat"]
+
+
+def test_rejected_output_reports_the_tokens_it_spent(provider: FakeProvider) -> None:
+    provider.replies.append(completion("not json at all", 11, 4))
+    provider.replies.append(completion('{"title": 3}', 13, 6))
+    with pytest.raises(InvalidModelOutputError) as caught:
+        asyncio.run(generate_digest(context(), settings_for(provider)))
+    spent = caught.value.spent
+    assert spent is not None
+    assert (spent.model, spent.input_tokens, spent.output_tokens) == ("fake-notes", 24, 10)

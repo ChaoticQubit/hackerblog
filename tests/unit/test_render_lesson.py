@@ -150,6 +150,14 @@ def test_flags_and_truncation_banners() -> None:
     assert "looks like instructions to an AI" in page
 
 
+def test_truncated_flag_shows_one_banner_not_a_raw_flag() -> None:
+    digest = PostDigest.model_validate(digest_data())
+    lesson = LessonSpec.model_validate(lesson_data())
+    page = render_lesson(sample_meta(flags=("truncated",), truncated=True), digest, lesson)
+    assert page.count("Based on the first part of a long post") == 1
+    assert "Flag: truncated" not in page
+
+
 def test_lesson_without_optional_parts() -> None:
     digest = PostDigest.model_validate(digest_data())
     lesson = LessonSpec.model_validate(lesson_data()).model_copy(

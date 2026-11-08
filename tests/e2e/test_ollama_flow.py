@@ -173,7 +173,7 @@ class Run:
 
     def ready_posts(self) -> list[dict[str, Any]]:
         """Return the posts `posts list` shows as ready."""
-        posts: list[dict[str, Any]] = self.data("posts", "list")
+        posts: list[dict[str, Any]] = self.data("posts", "list", "--status", "ready")
         assert all(post["status"] == "ready" for post in posts), posts
         return posts
 

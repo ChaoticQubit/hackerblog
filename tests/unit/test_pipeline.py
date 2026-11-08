@@ -15,6 +15,7 @@ from hackerblog.core import jobs, pipeline
 from hackerblog.core.errors import ExitCode, HackerBlogError
 from hackerblog.core.llm.schemas import (
     Generated,
+    InvalidModelOutputError,
     LessonSpec,
     PostContext,
     PostDigest,
@@ -179,6 +180,28 @@ def test_cache_key_follows_the_text_actually_sent(conn: sqlite3.Connection, tmp_
     assert backend.contexts[-1].truncated
     assert backend.contexts[-1].content_hash != backend.contexts[0].content_hash
     assert outcome.tokens > 0
+
+
+def test_cut_text_logs_a_warning_and_flags_the_post_until_it_fits(
+    conn: sqlite3.Connection, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    post_id = add_post(conn)
+    backend = FakeBackend()
+    cut = settings(tmp_path, llm=llm(max_input_tokens=60), max_input_tokens=60)
+    with caplog.at_level("WARNING", logger="hackerblog"):
+        run(conn, post_id, cut, backend, race_pages())
+    post = repo.get_post(conn, post_id)
+    assert post is not None
+    assert post.truncated
+    assert "truncated" in post.flags
+    assert any(
+        r.levelname == "WARNING" and "max_input_tokens" in r.getMessage() for r in caplog.records
+    )
+    run(conn, post_id, settings(tmp_path), backend, race_pages())
+    post = repo.get_post(conn, post_id)
+    assert post is not None
+    assert not post.truncated
+    assert "truncated" not in post.flags
 
 
 def test_short_page_is_skipped_without_llm(conn: sqlite3.Connection, tmp_path: Path) -> None:
@@ -391,3 +414,27 @@ def test_low_variety_quiz_is_flagged_not_failed(conn: sqlite3.Connection, tmp_pa
     assert post is not None and "quiz_low_variety" in post.flags
     page = files_of(conn, post_id)["lesson"].read_text()
     assert "Flag: quiz_low_variety" not in page
+
+
+class RejectingBackend(FakeBackend):
+    async def generate_lesson(
+        self, ctx: PostContext, digest: PostDigest, settings: LLMSettings
+    ) -> Generated[LessonSpec]:
+        self.calls.append("lesson")
+        spent = Generated(None, settings.lesson_model, 2000, 1500)
+        raise InvalidModelOutputError("lesson output invalid after 2 tries: x", spent)
+
+
+def test_tokens_of_a_rejected_generation_count_toward_the_budget(
+    conn: sqlite3.Connection, tmp_path: Path
+) -> None:
+    post_id = add_post(conn)
+    with pytest.raises(InvalidModelOutputError):
+        run(conn, post_id, settings(tmp_path), RejectingBackend(), race_pages())
+    rows = conn.execute(
+        "SELECT stage, model, calls, input_tokens, output_tokens FROM llm_usage ORDER BY stage"
+    ).fetchall()
+    assert rows == [
+        ("digest", "notes-model", 1, 900, 300),
+        ("lesson", "lesson-model", 1, 2000, 1500),
+    ]

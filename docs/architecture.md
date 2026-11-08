@@ -91,7 +91,7 @@ Sources: [PyPI agno](https://pypi.org/project/agno/), [PyPI crewai](https://pypi
 
 Guardrails, each enforced by a test or a CI check:
 
-- Install only `agno[anthropic,openai]`, pinned `>=3.1.12,<4`. Never the `models` or `litellm` extras.
+- Install only `agno[anthropic,ollama,openai]`, pinned `>=3.1.12,<4`. Never the `models` or `litellm` extras.
 - CI fails if `litellm` appears anywhere in `uv.lock`.
 - Telemetry off: `AGNO_TELEMETRY=false` is set by the core before Agno is imported, and every `Agent` is built with `telemetry=False`.
 - No Agno storage, memory, knowledge or AgentOS features. HackerBlog's own SQLite is the only store.
@@ -370,7 +370,8 @@ Runtime, all in the base install:
 | Typer (with rich) | CLI from type hints, same author and style as FastAPI; rich gives tables and colour that respects `NO_COLOR`. |
 | FastAPI | HTTP API with automatic OpenAPI, which is the typed contract for the host app and a later Vue UI. |
 | uvicorn | ASGI server for FastAPI. |
-| agno[anthropic,openai] | Structured generation and the `ask` tool loop across Claude, OpenAI-compatible servers and Ollama (section 3). |
+| agno[anthropic,ollama,openai] | Structured generation and the `ask` tool loop across Claude, OpenAI-compatible servers and Ollama (section 3). |
+| ollama (via `agno[ollama]`) | Ollama's native `/api/chat` client. Only that API takes `options.num_ctx`; Ollama's OpenAI-compatible `/v1` endpoint ignores it and runs every model at a 4096-token context, which silently cuts long posts. |
 
 Not used, on purpose: LiteLLM (supply chain), Alembic (a 30-line `PRAGMA user_version` runner is enough for one SQLite file), Celery, Huey or Redis (the `jobs` table suffices), structlog (a stdlib JSON formatter is 20 lines), tomlkit (appending a `[[site]]` block is text append plus re-parse), cssselect (link diff uses a URL regex, not CSS selectors).
 
@@ -433,10 +434,10 @@ Top level:
 | `provider` | `"anthropic"`, `"openai"`, `"openai_compatible"`, `"ollama"` | `"anthropic"` | Which backend. |
 | `notes_model` | string | `"claude-haiku-5-5"` for anthropic, required otherwise | Model for the digest stage (summary, notes, glossary). |
 | `lesson_model` | string | `"claude-sonnet-5-5"` for anthropic, required otherwise | Model for lesson, quiz and `ask`. |
-| `base_url` | URL | required for `openai_compatible`, default `http://127.0.0.1:11434/v1` for `ollama` | Endpoint for OpenAI-compatible servers. |
+| `base_url` | URL | required for `openai_compatible`, default `http://127.0.0.1:11434/v1` for `ollama` | Endpoint for OpenAI-compatible servers. For `ollama`, a trailing `/v1` is dropped and the native API is used, so the context window covers `max_input_tokens` (section 11.2). |
 | `daily_token_budget` | int >= 1, or unset | unset (no cap) | Optional cap on input plus output tokens per local calendar day across all stages. |
-| `max_input_tokens` | int | `24000` | Post text is cut at a paragraph boundary to fit; the digest records `truncated: true`. |
-| `request_timeout_seconds` | int | `120` | Per LLM call. |
+| `max_input_tokens` | int | `24000` | Post text is cut at a paragraph boundary to fit; the cut is logged as a warning, the post gets the `truncated` flag and the lesson says it covers only the first part. |
+| `request_timeout_seconds` | int, 1 to 3600 | `120` for `anthropic` and `openai`, `900` for `ollama` and `openai_compatible` | Per LLM call. Local models on consumer hardware can take minutes per long post, so local providers get the longer default; a value set here wins for every provider. |
 
 `[output]`:
 
@@ -904,7 +905,7 @@ async def generate_lesson(ctx: PostContext, digest: PostDigest, settings: LLMSet
 async def answer(question: str, tools: AskTools, settings: LLMSettings, history: Sequence[Turn] = ()) -> Generated[Answer]: ...
 ```
 
-`Generated[T]` carries `value: T`, `model: str`, `input_tokens: int`, `output_tokens: int`. Inside, the digest and lesson calls each build an Agno `Agent(model=..., instructions=<prompt>, output_schema=<Pydantic model>, tools=[], telemetry=False)`; the `answer` call builds one with the three read-only tools from section 11.5 and no `output_schema`; model classes are `Claude` for Anthropic, `OpenAIChat` for OpenAI, `OpenAILike(base_url=...)` for OpenAI-compatible servers and for Ollama's `/v1` endpoint. If the response content is not an instance of the schema (JSON-mode fallback failure), the call is retried once with the validation error appended; a second failure raises `InvalidModelOutput`, which fails the job.
+`Generated[T]` carries `value: T`, `model: str`, `input_tokens: int`, `output_tokens: int`. Inside, the digest and lesson calls each build an Agno `Agent(model=..., instructions=<prompt>, output_schema=<Pydantic model>, tools=[], telemetry=False)`; the `answer` call builds one with the three read-only tools from section 11.5 and no `output_schema`; model classes are `Claude` for Anthropic, `OpenAIChat` for OpenAI, `OpenAILike(base_url=...)` for OpenAI-compatible servers, and Agno's native `Ollama` for Ollama. The `Ollama` model talks to `/api/chat` on `base_url` without its `/v1` suffix and sends `options.num_ctx` = `max_input_tokens` + digest output (4000, part of the lesson input) + the longest stage output (8000) + 8192 for prompts and schemas, 44192 by default. The value is the same for every stage, so Ollama does not reload the model between digest and lesson. An OpenAI-compatible server has no request field for the context window: set it on the server, for example `OLLAMA_CONTEXT_LENGTH=45000` for an Ollama behind `openai_compatible`, or the server's own context flag. If the response content is not an instance of the schema (JSON-mode fallback failure), the call is retried once with the validation error appended; a second failure raises `InvalidModelOutput`, which fails the job.
 
 ### 11.3 Output schemas
 

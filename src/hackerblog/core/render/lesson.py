@@ -188,7 +188,9 @@ def render_lesson(meta: PostMeta, digest: PostDigest, lesson: LessonSpec) -> str
         icons=ICONS,
         data=lesson_data(meta, digest, lesson),
         shapes=diagram_shapes(lesson.diagram) if lesson.diagram else None,
-        notices=[FLAG_MESSAGES.get(flag, f"Flag: {flag}") for flag in meta.flags],
+        notices=[
+            FLAG_MESSAGES.get(flag, f"Flag: {flag}") for flag in meta.flags if flag != "truncated"
+        ],
         game_heading=GAME_HEADINGS.get(lesson.game.type, "Challenge") if lesson.game else "",
         questions=questions,
         template_version=TEMPLATE_VERSION,

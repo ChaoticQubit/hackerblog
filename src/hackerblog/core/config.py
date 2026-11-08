@@ -16,6 +16,13 @@ from hackerblog.core.net.urls import url_policy_problem
 ANTHROPIC_NOTES_MODEL = "claude-haiku-5-5"
 ANTHROPIC_LESSON_MODEL = "claude-sonnet-5-5"
 OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
+LOCAL_REQUEST_TIMEOUT_SECONDS = 900
+EXAMPLE_MODELS = {
+    "ollama": "qwen2.5:7b",
+    "openai": "<OpenAI model id>",
+    "openai_compatible": "<model id served at base_url>",
+}
+MODEL_HINT = "Add under [llm]: "
 SCHEDULE_WORDS = frozenset({"hourly", "daily", "weekly"})
 CRON_RANGES = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))
 CRON_FIELD = re.compile(r"^(\*|(\d+)(?:-(\d+))?)(?:/(\d+))?$")
@@ -158,6 +165,9 @@ class LLMConfig(StrictModel):
             self.lesson_model = self.lesson_model or ANTHROPIC_LESSON_MODEL
         if self.provider == "ollama":
             self.base_url = self.base_url or OLLAMA_BASE_URL
+        local = self.provider in {"ollama", "openai_compatible"}
+        if local and "request_timeout_seconds" not in self.model_fields_set:
+            self.request_timeout_seconds = LOCAL_REQUEST_TIMEOUT_SECONDS
         return self
 
 
@@ -292,7 +302,8 @@ def _semantic_problems(config: Config) -> list[tuple[tuple[str | int, ...], str,
         for key in ("notes_model", "lesson_model"):
             if getattr(config.llm, key) is None:
                 message = f"{key} is required for provider {config.llm.provider}"
-                found.append((("llm", key), message, f"Set {key} in [llm]"))
+                line = f'{key} = "{EXAMPLE_MODELS[config.llm.provider]}"'
+                found.append((("llm", key), message, MODEL_HINT + line))
     if config.llm.provider == "openai_compatible" and config.llm.base_url is None:
         found.append((("llm", "base_url"), "base_url is required", "Set base_url in [llm]"))
     if config.notify.webhook_url and not config.notify.webhook_allow_private:

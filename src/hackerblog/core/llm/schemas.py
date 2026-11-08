@@ -239,7 +239,15 @@ class Turn:
 
 
 class InvalidModelOutputError(ValueError):
-    """The model output passed the schema but failed post-validation, or never parsed."""
+    """The model output passed the schema but failed post-validation, or never parsed.
+
+    spent carries the model id and the tokens every rejected attempt used, so they still
+    count toward the daily budget; None when nothing was spent.
+    """
+
+    def __init__(self, message: str, spent: Generated[None] | None = None) -> None:
+        super().__init__(message)
+        self.spent = spent
 
 
 def quiz_item_problems(item: MCQ | Ordering | ShortAnswer | SpotTheBug | MatchPairs) -> list[str]:

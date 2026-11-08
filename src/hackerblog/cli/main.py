@@ -22,6 +22,7 @@ from hackerblog.cli.commands.sites import site_line
 from hackerblog.cli.output import clean, emit_error, emit_json, say
 from hackerblog.cli.state import State, fail, get_state
 from hackerblog.core import pipeline, service, work
+from hackerblog.core.config import MODEL_HINT, Problem
 from hackerblog.core.discovery import service as discovery
 from hackerblog.core.errors import ExitCode, HackerBlogError
 from hackerblog.core.logging import setup_logging
@@ -149,6 +150,7 @@ def check(
         for problem in report.problems:
             say(problem.render(name))
         say(summary)
+        _say_model_lines(report.problems, name)
         raise typer.Exit(int(ExitCode.CONFIG))
     resolved = asyncio.run(discovery.check_online(state.paths)) if online else []
     if not as_json:
@@ -178,6 +180,22 @@ def check(
         say(f"OK: {len(config.sites)} sites, provider {config.llm.provider} ({models})")
     if unreachable:
         raise typer.Exit(int(ExitCode.PARTIAL))
+
+
+def _say_model_lines(problems: list[Problem], file_name: str) -> None:
+    """Print, one per line, the exact [llm] lines the missing model problems ask for.
+
+    Prints nothing when no model is missing. The model in each line is a placeholder from
+    EXAMPLE_MODELS; nothing is written to the config file.
+    """
+    keys = {"llm.notes_model", "llm.lesson_model"}
+    lines = [p.hint.removeprefix(MODEL_HINT) for p in problems if p.location in keys]
+    if not lines:
+        return
+    assert all(line.endswith('"') for line in lines)
+    say(f"Add these lines under [llm] in {file_name}:")
+    for line in lines:
+        say(line)
 
 
 def _online_line(item: discovery.OnlineResult) -> str:

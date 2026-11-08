@@ -63,3 +63,36 @@ def test_settings_are_frozen() -> None:
     name = "notes_model"
     with pytest.raises(AttributeError):
         setattr(settings, name, "other")
+
+
+@pytest.mark.parametrize(
+    ("provider", "base_url", "timeout"),
+    [
+        ("anthropic", None, 120),
+        ("openai", None, 120),
+        ("ollama", None, 900),
+        ("openai_compatible", "http://127.0.0.1:8080/v1", 900),
+    ],
+)
+def test_request_timeout_default_depends_on_provider(
+    provider: str, base_url: str | None, timeout: int
+) -> None:
+    config = LLMConfig.model_validate(
+        {"provider": provider, "notes_model": "a", "lesson_model": "b", "base_url": base_url}
+    )
+    settings = LLMSettings.from_config(config, KEY)
+    assert settings.request_timeout_seconds == timeout
+
+
+@pytest.mark.parametrize("provider", ["ollama", "openai_compatible"])
+def test_request_timeout_set_by_user_is_kept_for_local_providers(provider: str) -> None:
+    config = LLMConfig.model_validate(
+        {
+            "provider": provider,
+            "notes_model": "a",
+            "lesson_model": "b",
+            "base_url": "http://127.0.0.1:8080/v1",
+            "request_timeout_seconds": 60,
+        }
+    )
+    assert LLMSettings.from_config(config, None).request_timeout_seconds == 60

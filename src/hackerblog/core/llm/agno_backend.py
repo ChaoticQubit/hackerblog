@@ -20,6 +20,7 @@ from agno.exceptions import ModelAuthenticationError
 from agno.models.anthropic import Claude
 from agno.models.base import Model
 from agno.models.message import Message
+from agno.models.ollama import Ollama
 from agno.models.openai import OpenAIChat
 from agno.models.openai.like import OpenAILike
 from agno.run.agent import RunOutput
@@ -52,6 +53,7 @@ PROMPT_VERSIONS: Mapping[PromptStage, str] = {
     "ask": "ask.v1",
 }
 OUTPUT_TOKENS_MAX: Mapping[PromptStage, int] = {"digest": 4000, "lesson": 8000, "ask": 2000}
+PROMPT_TOKENS_MAX = 8192
 GENERATION_ATTEMPTS = 2
 ASK_TOOL_CALLS_MAX = 8
 ANSWER_CHARS_MAX = 8000
@@ -107,6 +109,21 @@ def lesson_input(ctx: PostContext, digest: PostDigest) -> str:
     )
 
 
+def ollama_context(settings: LLMSettings) -> int:
+    """Return the Ollama num_ctx that fits any stage: post, digest, prompt and longest output.
+
+    One value for every stage, so Ollama does not reload the model between digest and lesson.
+    """
+    context = (
+        settings.max_input_tokens
+        + OUTPUT_TOKENS_MAX["digest"]
+        + max(OUTPUT_TOKENS_MAX.values())
+        + PROMPT_TOKENS_MAX
+    )
+    assert context > settings.max_input_tokens + max(OUTPUT_TOKENS_MAX.values())
+    return context
+
+
 def _model(settings: LLMSettings, model_id: str, output_tokens_max: int) -> Model:
     key = settings.api_key.get_secret_value() if settings.api_key is not None else None
     timeout = float(settings.request_timeout_seconds)
@@ -131,6 +148,15 @@ def _model(settings: LLMSettings, model_id: str, output_tokens_max: int) -> Mode
             retries=0,
         )
     assert settings.base_url is not None
+    if settings.provider == "ollama":
+        return Ollama(
+            id=model_id,
+            host=settings.base_url.rstrip("/").removesuffix("/v1"),
+            api_key=None,
+            options={"num_ctx": ollama_context(settings), "num_predict": output_tokens_max},
+            timeout=timeout,
+            retries=0,
+        )
     return OpenAILike(
         id=model_id,
         api_key=key or "not-needed",
@@ -318,7 +344,8 @@ async def _generate[T: BaseModel](
         return Generated(kept, model_id, input_tokens, output_tokens)
     assert rejection
     raise InvalidModelOutputError(
-        f"{stage} output invalid after {GENERATION_ATTEMPTS} tries: {rejection}"
+        f"{stage} output invalid after {GENERATION_ATTEMPTS} tries: {rejection}",
+        Generated(None, model_id, input_tokens, output_tokens),
     )
 
 

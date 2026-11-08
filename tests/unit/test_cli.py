@@ -125,6 +125,41 @@ def test_check_unsafe_secrets_exits_3(env: dict[str, str], tmp_path: Path) -> No
     assert "chmod 600" in out
 
 
+@pytest.mark.parametrize(
+    ("provider", "model"),
+    [
+        ("ollama", "qwen2.5:7b"),
+        ("openai", "<OpenAI model id>"),
+        ("openai_compatible", "<model id served at base_url>"),
+    ],
+)
+def test_check_prints_the_model_lines_to_add(
+    env: dict[str, str], tmp_path: Path, provider: str, model: str
+) -> None:
+    invoke(env, "init", "--provider", provider, "--output-dir", str(tmp_path / "out"))
+    starter = (tmp_path / "hb" / "sites.toml").read_text(encoding="utf-8")
+    assert "notes_model" not in starter
+    code, out = invoke(env, "check")
+    assert code == 3
+    lines = out.splitlines()
+    assert "Add these lines under [llm] in sites.toml:" in lines
+    assert f'notes_model = "{model}"' in lines
+    assert f'lesson_model = "{model}"' in lines
+
+
+def test_check_prints_only_the_missing_model_line(env: dict[str, str], tmp_path: Path) -> None:
+    invoke(env, "init", "--provider", "ollama", "--output-dir", str(tmp_path / "out"))
+    config = tmp_path / "hb" / "sites.toml"
+    text = config.read_text(encoding="utf-8").replace(
+        "[llm]\n", '[llm]\nnotes_model = "llama3.2:3b"\n'
+    )
+    config.write_text(text, encoding="utf-8")
+    code, out = invoke(env, "check")
+    assert code == 3
+    assert 'lesson_model = "qwen2.5:7b"' in out.splitlines()
+    assert "notes_model = " not in out
+
+
 def test_check_json_output(env: dict[str, str], tmp_path: Path) -> None:
     invoke(env, "init", "--output-dir", str(tmp_path / "out"))
     code, out = invoke(env, "check", "--json")

@@ -7,6 +7,7 @@ run_worker claims process_post jobs and feeds them through process_post.
 
 import asyncio
 import contextlib
+import logging
 import os
 import sqlite3
 from collections.abc import Callable, Mapping
@@ -33,6 +34,7 @@ from hackerblog.core.llm import cache
 from hackerblog.core.llm.grounding import QUIZ_UNGROUNDED, GroundedLesson, ground_lesson
 from hackerblog.core.llm.schemas import (
     Generated,
+    InvalidModelOutputError,
     LessonSpec,
     PostContext,
     PostDigest,
@@ -54,6 +56,9 @@ OUTPUT_TOKENS_MAX = {"digest": 4000, "lesson": 8000}
 WORDS_PER_MINUTE = 200
 HTTP_OK = 200
 QUIZ_LOW_VARIETY = "quiz_low_variety"
+TRUNCATED = "truncated"
+
+logger = logging.getLogger("hackerblog.pipeline")
 
 
 class Page(Protocol):
@@ -199,8 +204,19 @@ def _context(conn: sqlite3.Connection, post: repo.PostRow, settings: Settings) -
             f"hackerblog process {post.url}",
         )
     body, truncated = truncate(post.body_md, settings.max_input_tokens)
+    if truncated:
+        logger.warning(
+            "post %d text cut from %d to %d characters to fit max_input_tokens %d",
+            post.id,
+            len(post.body_md),
+            len(body),
+            settings.max_input_tokens,
+        )
     if truncated != post.truncated:
         conn.execute("UPDATE posts SET truncated = ? WHERE id = ?", (int(truncated), post.id))
+    flags = {*post.flags} - {TRUNCATED} | ({TRUNCATED} if truncated else set[str]())
+    if flags != {*post.flags}:
+        repo.set_flags(conn, post.id, tuple(flags))
     return PostContext(
         post_id=post.id,
         title=post.title or post.url,
@@ -235,7 +251,12 @@ async def _generate[T: BaseModel](
     heartbeat()
     pending = call()
     assert asyncio.iscoroutine(pending)
-    generated: Generated[T] = await pending
+    try:
+        generated: Generated[T] = await pending
+    except InvalidModelOutputError as rejected:
+        if rejected.spent is not None:
+            cache.record_usage(conn, stage, rejected.spent, datetime.now().astimezone().date())
+        raise
     assert isinstance(generated.value, schema)
     cache.put(conn, key, stage, generated)
     cache.record_usage(conn, stage, generated, datetime.now().astimezone().date())

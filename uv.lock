@@ -27,6 +27,9 @@ wheels = [
 anthropic = [
     { name = "anthropic" },
 ]
+ollama = [
+    { name = "ollama" },
+]
 openai = [
     { name = "openai" },
 ]
@@ -378,7 +381,7 @@ name = "hackerblog"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "agno", extra = ["anthropic", "openai"] },
+    { name = "agno", extra = ["anthropic", "ollama", "openai"] },
     { name = "apscheduler" },
     { name = "fastapi" },
     { name = "feedparser" },
@@ -402,7 +405,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agno", extras = ["anthropic", "openai"], specifier = ">=3.1.12,<4" },
+    { name = "agno", extras = ["anthropic", "ollama", "openai"], specifier = ">=3.1.12,<4" },
     { name = "apscheduler", specifier = ">=3.11.3,<4" },
     { name = "fastapi", specifier = ">=0.162,<1" },
     { name = "feedparser", specifier = ">=6.0.11,<7" },
@@ -972,6 +975,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e6/99/d27cfc9518f49e4cbc25c683ec7cf8704a9d31311341c291c0e78ddf791b/nodeenv-1.12.0.tar.gz", hash = "sha256:4ea7f88339310afebc3253f2c7a91b94bacf97d73a36a5c108962abdfaca501e", size = 131292, upload-time = "2026-10-31T19:03:18.847Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2d/6a/8a9ac7d5e2f7cf53c459bfef90ebc17a2f8cd54b665af96799d4c534840e/nodeenv-1.12.0-py3-none-any.whl", hash = "sha256:80644d65c10cc2be12e3e4b54b3367ff288c7ad24ae75c2dcc65454fc7449d4d", size = 39442, upload-time = "2026-10-31T19:03:17.427Z" },
+]
+
+[[package]]
+name = "ollama"
+version = "0.6.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b8/97/eeafe65594e4f4b25e443e068ef7d83aa3105b023e12e1c408c38669fc07/ollama-0.6.3.tar.gz", hash = "sha256:41fc49a8095c4a75939c4c1f8582e4d0671692fb6eac2a5a7ede8c9872b67096", size = 56868, upload-time = "2026-09-29T01:26:51.906Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4d/64/87505d9e006461233c21c8e66dc1ecee49c996090584b216abd0dd4a8322/ollama-0.6.3-py3-none-any.whl", hash = "sha256:6a20bc42c1a5f889295d7ec490d35e5132fc31f339561530f43a8abd4dbfe508", size = 16603, upload-time = "2026-09-29T01:26:50.451Z" },
 ]
 
 [[package]]

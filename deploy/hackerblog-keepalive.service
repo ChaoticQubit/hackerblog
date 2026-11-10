@@ -1,0 +1,31 @@
+[Unit]
+Description=HackerBlog keep-alive: hold 25% of RAM so the Always Free A1 VM is not idle
+Documentation=file:///home/hackerblog/app/docs/deploy/oracle.md
+
+[Service]
+Type=exec
+DynamicUser=yes
+ExecStart=/usr/bin/python3 -I /usr/local/lib/hackerblog/keepalive.py 0.25
+Restart=always
+RestartSec=60s
+OOMScoreAdjust=1000
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hackerblog-keepalive
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

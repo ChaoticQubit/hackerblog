@@ -1,0 +1,19 @@
+{
+	email __ACME_EMAIL__
+}
+
+__DOMAIN__ {
+	encode zstd gzip
+
+	@browser path / /files /files/*
+	basic_auth @browser {
+		__WEB_USER__ __WEB_HASH__
+	}
+	request_header @browser -Authorization
+
+	redir / /files/index.html
+
+	reverse_proxy 127.0.0.1:8765 {
+		header_up Host 127.0.0.1:8765
+	}
+}

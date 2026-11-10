@@ -1,0 +1,44 @@
+[Unit]
+Description=HackerBlog agent (API, scheduler and worker on 127.0.0.1:8765)
+Documentation=file:///home/hackerblog/app/docs/deploy/oracle.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+User=hackerblog
+Group=hackerblog
+WorkingDirectory=/home/hackerblog/app
+Environment=HACKERBLOG_HOME=/home/hackerblog/.hackerblog
+Environment=NO_COLOR=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/home/hackerblog/app/.venv/bin/hackerblog serve --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hackerblog
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/hackerblog/.hackerblog /home/hackerblog/HackerBlog
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

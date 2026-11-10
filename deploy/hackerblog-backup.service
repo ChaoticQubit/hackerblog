@@ -1,0 +1,31 @@
+[Unit]
+Description=HackerBlog nightly backup (SQLite .backup plus output tar) to the backup volume
+Documentation=file:///home/hackerblog/app/docs/deploy/oracle.md
+RequiresMountsFor=/mnt/hackerblog-backup
+
+[Service]
+Type=oneshot
+User=hackerblog
+Group=hackerblog
+Nice=10
+IOSchedulingClass=idle
+ExecStart=/usr/local/lib/hackerblog/backup.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hackerblog-backup
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/mnt/hackerblog-backup /home/hackerblog/.hackerblog
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=

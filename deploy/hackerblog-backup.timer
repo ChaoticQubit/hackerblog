@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the HackerBlog backup every night
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

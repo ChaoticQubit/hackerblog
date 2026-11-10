@@ -33,6 +33,7 @@ from hackerblog.core.render.sanitize import csp_hash
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.live,
     pytest.mark.skipif(not ollama_has_model(), reason=f"Ollama at {OLLAMA_URL} lacks a model"),
 ]
 

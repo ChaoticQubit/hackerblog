@@ -64,5 +64,8 @@ reportMissingTypeStubs = false
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 pythonpath = ["."]
-markers = ["integration: slow tests against a real LLM provider; deselect with -m 'not integration'"]
+markers = [
+    "integration: slow tests against a real LLM provider; deselect with -m 'not integration'",
+    "live: calls a real model (Ollama or a provider); make check skips these, make check-live runs only them",
+]
 filterwarnings = ["ignore:Using `httpx` with `starlette.testclient` is deprecated"]

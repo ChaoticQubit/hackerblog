@@ -1,4 +1,4 @@
-.PHONY: setup fmt lint typecheck test guard check scan nuclei-templates clean
+.PHONY: setup fmt lint typecheck test test-offline test-live guard check check-live scan nuclei-templates clean
 
 NUCLEI_TEMPLATES_VERSION := 10.5.1
 NUCLEI_TEMPLATES_SHA256 := 30fe1cfaced4635f886e4a2673641bba86998dceec28e468274524e789aa56eb
@@ -19,14 +19,24 @@ lint:
 typecheck:
 	uv run pyright
 
+PYTEST_ARGS ?=
+
 test:
-	uv run pytest -q
+	uv run pytest -q $(PYTEST_ARGS)
+
+test-offline:
+	uv run pytest -q -m "not live" $(PYTEST_ARGS)
+
+test-live:
+	uv run pytest -q -m live $(PYTEST_ARGS)
 
 guard:
 	@if grep -qi '^name = "litellm"' uv.lock; then echo "litellm found in uv.lock"; exit 1; fi
 	@echo "guard: no litellm in uv.lock"
 
-check: guard lint typecheck test
+check: guard lint typecheck test-offline
+
+check-live: test-live
 
 nuclei-templates: $(NUCLEI_TEMPLATES)
 

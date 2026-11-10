@@ -26,6 +26,7 @@ from hackerblog.core.store.migrate import connect, migrate
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.live,
     pytest.mark.skipif(CHROME is None, reason="Google Chrome is not installed"),
 ]
 LOG = Path(__file__).resolve().parents[3] / ".local-state" / "m2-acceptance.log"

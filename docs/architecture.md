@@ -1743,6 +1743,8 @@ Per the project rules: unit tests first (TDD), integration and e2e against real 
 
 Live-provider check: a separate CI job on the main branch only (never on pull requests from forks) runs the `process_post` integration test against Anthropic with a repository secret, to catch provider API drift. It is not a merge gate.
 
+Live-model tests carry the `live` pytest marker: `tests/integration/processing/test_llm_live.py`, `tests/integration/processing/test_pipeline_live.py` and `tests/e2e/test_ollama_flow.py`. Each skips when no model is available. Local runs share one Ollama slot, so parallel runs would queue on it. That is why `make check` runs the guard, lint, typecheck and every test except `-m live`, and `make check-live` runs only the live tests. `make test`, which CI uses, still runs everything, with the live tests skipping when no model is available. Pass extra pytest flags with `PYTEST_ARGS`, for example `make check-live PYTEST_ARGS=--collect-only`.
+
 CI pipeline on every pull request, in order:
 
 1. `uv sync --locked`; fail if `litellm` appears in `uv.lock`.

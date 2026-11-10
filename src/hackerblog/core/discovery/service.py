@@ -177,13 +177,19 @@ async def poll(
     config = load_valid_config(paths)
     if dry_run:
         store = scratch_store(paths, config)
-        return await _poll(store, config, slugs, trigger, dry_run=True, sweep=sweep)
+        try:
+            return await poll_store(store, config, slugs, trigger, dry_run=True, sweep=sweep)
+        finally:
+            store.close()
     with poll_lock(paths, wait):
         store = open_store(paths, config)
-        return await _poll(store, config, slugs, trigger, dry_run=False, sweep=sweep)
+        try:
+            return await poll_store(store, config, slugs, trigger, dry_run=False, sweep=sweep)
+        finally:
+            store.close()
 
 
-async def _poll(
+async def poll_store(
     conn: sqlite3.Connection,
     config: Config,
     slugs: Sequence[str],
@@ -192,37 +198,39 @@ async def _poll(
     dry_run: bool,
     sweep: bool,
 ) -> PollReport:
-    try:
-        targets = select_sites(conn, config, slugs)
-        run_id = sites.start_poll_run(conn, trigger, utc_now())
-        fetcher = Fetcher(conn, config.fetch, persist=not dry_run)
-        async with fetcher, asyncio.TaskGroup() as group:
-            tasks = [
-                group.create_task(
-                    discover_site(
-                        conn,
-                        fetcher,
-                        row,
-                        site,
-                        limits=Limits.of(site, config.defaults),
-                        now=utc_now(),
-                        sweep=sweep,
-                    )
+    """Run one discovery cycle on an open store, which the caller closes.
+
+    A dry run passes a scratch_store and the caller holds no lock; else the caller holds
+    poll_lock.
+    """
+    targets = select_sites(conn, config, slugs)
+    run_id = sites.start_poll_run(conn, trigger, utc_now())
+    fetcher = Fetcher(conn, config.fetch, persist=not dry_run)
+    async with fetcher, asyncio.TaskGroup() as group:
+        tasks = [
+            group.create_task(
+                discover_site(
+                    conn,
+                    fetcher,
+                    row,
+                    site,
+                    limits=Limits.of(site, config.defaults),
+                    now=utc_now(),
+                    sweep=sweep,
                 )
-                for row, site in targets
-            ]
-        report = PollReport(None if dry_run else run_id, [task.result() for task in tasks], dry_run)
-        ok = sum(1 for result in report.results if result.error is None)
-        sites.finish_poll_run(
-            conn,
-            run_id,
-            utc_now(),
-            sites_ok=ok,
-            sites_failed=len(report.results) - ok,
-            new_posts=report.new_posts,
-        )
-    finally:
-        conn.close()
+            )
+            for row, site in targets
+        ]
+    report = PollReport(None if dry_run else run_id, [task.result() for task in tasks], dry_run)
+    ok = sum(1 for result in report.results if result.error is None)
+    sites.finish_poll_run(
+        conn,
+        run_id,
+        utc_now(),
+        sites_ok=ok,
+        sites_failed=len(report.results) - ok,
+        new_posts=report.new_posts,
+    )
     assert len(report.results) == len(targets)
     return report
 

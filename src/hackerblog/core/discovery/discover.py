@@ -3,6 +3,7 @@
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
 from hackerblog.core.config import Defaults, SiteConfig
@@ -21,6 +22,8 @@ from hackerblog.core.store.sites import SiteRow, transaction
 SITEMAP_DEPTH_MAX = 2
 SITEMAP_CHILDREN_MAX = 50
 RESOLVE_AFTER_FAILURES = 3
+ARCHIVE_EVERY = timedelta(days=7)
+ROOT_SAMPLE_MAX = 200
 
 
 @dataclass
@@ -31,6 +34,7 @@ class Collected:
     fetched: int = 0
     not_modified: int = 0
     responses: list[Response] = field(default_factory=list[Response])
+    archived: bool = False
 
     @property
     def all_not_modified(self) -> bool:
@@ -132,12 +136,14 @@ async def _discover(
         row = refreshed
     assert row.discovery_method is not None
     first_sync = row.backfilled_at is None
+    archived = sites.archived_at(conn, row.id)
+    never = archived is None and not first_sync
     collected = await _collect(
         conn,
         fetcher,
         row,
-        archive=first_sync or sweep,
-        sweep=sweep,
+        archive=first_sync or sweep or never or _archive_stale(archived, now),
+        unconditional=sweep or never,
         allowed=config.allowed_hosts,
         aggregator=config.aggregator,
     )
@@ -150,6 +156,8 @@ async def _discover(
             sites.mark_backfilled(conn, row.id, now)
         else:
             stored = store_new(conn, row.id, collected.candidates, blocked, limits=limits, now=now)
+        if collected.archived:
+            sites.mark_archived(conn, row.id, now)
         for response in collected.responses:
             fetcher.remember(response)
     return SiteResult(
@@ -186,7 +194,7 @@ async def _collect(
     row: SiteRow,
     *,
     archive: bool,
-    sweep: bool,
+    unconditional: bool,
     allowed: Sequence[str],
     aggregator: bool,
 ) -> Collected:
@@ -196,9 +204,10 @@ async def _collect(
     feed holding no known post, so older ones may have fallen out of it) reads the feed,
     the sitemap and the index page together, because feeds carry only the latest entries.
     Aggregator sites never run it: their feed is the whole source and rarely repeats.
+    unconditional drops If-None-Match, so validators cached before a pass cannot hide posts.
     """
     collected = Collected()
-    conditional = not sweep
+    conditional = not unconditional
     if row.discovery_method == "feed":
         assert row.feed_url is not None
         await _collect_feed(
@@ -212,7 +221,10 @@ async def _collect(
         )
         archive = archive or _feed_gap(conn, collected.candidates)
     archive = archive and not aggregator
-    roots = post_roots(row.url, [item.url for item in collected.candidates])
+    seen = [item.url for item in collected.candidates]
+    if archive:
+        seen += posts.site_urls(conn, row.id, ROOT_SAMPLE_MAX)
+    roots = post_roots(row.url, seen)
     if row.sitemap_url and (archive or row.discovery_method == "sitemap"):
         await _collect_sitemap(
             fetcher, row, row.sitemap_url, collected, roots, conditional=conditional
@@ -221,8 +233,16 @@ async def _collect(
         await _collect_links(fetcher, row, collected, roots, conditional)
     unique = {item.url: item for item in reversed(collected.candidates)}
     collected.candidates = list(reversed(unique.values()))
+    collected.archived = archive
     assert len(collected.candidates) == len(unique)
     return collected
+
+
+def _archive_stale(archived: str | None, now: str) -> bool:
+    """True when the last archive pass is older than ARCHIVE_EVERY."""
+    if archived is None:
+        return False
+    return datetime.fromisoformat(now) - datetime.fromisoformat(archived) >= ARCHIVE_EVERY
 
 
 def _feed_gap(conn: sqlite3.Connection, entries: list[Candidate]) -> bool:

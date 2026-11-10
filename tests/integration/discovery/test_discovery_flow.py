@@ -273,30 +273,76 @@ def test_posts_that_fell_out_of_the_feed_between_polls_are_caught(
     assert stored_urls(env, "rootblog") == set(server.post_urls("rootblog"))
 
 
-def test_backfill_finds_archive_posts_a_routine_poll_cannot_see(
-    env: dict[str, str], server: FixtureServer
-) -> None:
-    follow_rootblog(env, server)
-    poll(env, "--site", "rootblog")
-    lost = server.post_urls("rootblog")[:2]
+def forget(env: dict[str, str], urls: list[str]) -> None:
     with db(env) as conn:
         ids = json.dumps(
             [
                 row[0]
                 for row in conn.execute(
                     "SELECT id FROM posts WHERE url IN (SELECT value FROM json_each(?))",
-                    (json.dumps(lost),),
+                    (json.dumps(urls),),
                 )
             ]
         )
         conn.execute("DELETE FROM jobs WHERE post_id IN (SELECT value FROM json_each(?))", (ids,))
         conn.execute("DELETE FROM posts WHERE id IN (SELECT value FROM json_each(?))", (ids,))
-    assert not set(lost) & stored_urls(env, "rootblog")
+    assert not set(urls) & stored_urls(env, "rootblog")
+
+
+def set_archived(env: dict[str, str], value: str | None) -> None:
+    with db(env) as conn:
+        site_id = conn.execute("SELECT id FROM sites WHERE slug = 'rootblog'").fetchone()[0]
+        conn.execute("DELETE FROM meta WHERE key = ?", (f"archive_done:{site_id}",))
+        if value is not None:
+            conn.execute("INSERT INTO meta VALUES (?, ?)", (f"archive_done:{site_id}", value))
+
+
+def test_backfill_finds_archive_posts_a_routine_poll_cannot_see(
+    env: dict[str, str], server: FixtureServer
+) -> None:
+    follow_rootblog(env, server)
+    poll(env, "--site", "rootblog")
+    lost = server.post_urls("rootblog")[:2]
+    forget(env, lost)
     routine = by_slug(poll(env, "--site", "rootblog"))["rootblog"]
     assert routine["new"] == 0
-    code, out = invoke(env, "backfill", "rootblog", "--no-process", "--json")
+    code, out = invoke(env, "backfill", "rootblog", "--dry-run", "--json")
     assert code == 0, out
+    assert len(json.loads(out)["data"]["queued"]) == 2, out
+    assert not set(lost) & stored_urls(env, "rootblog")
+    code, out = invoke(env, "backfill", "rootblog", "--no-process")
+    assert code == 0, out
+    assert "Queuing 2 posts" in out, out
     assert set(lost) <= stored_urls(env, "rootblog")
+
+
+def test_a_site_synced_before_the_archive_pass_gets_it_on_the_next_poll(
+    env: dict[str, str], server: FixtureServer
+) -> None:
+    follow_rootblog(env, server)
+    poll(env, "--site", "rootblog")
+    lost = server.post_urls("rootblog")[:2]
+    forget(env, lost)
+    set_archived(env, None)
+    server.reset_counts()
+    caught = by_slug(poll(env, "--site", "rootblog"))["rootblog"]
+    assert caught["new"] == 2, caught
+    assert set(lost) <= stored_urls(env, "rootblog")
+    server.reset_counts()
+    poll(env, "--site", "rootblog")
+    assert {path for _, path, _ in server.requests} <= {"/rootblog/feed/", "/robots.txt"}
+
+
+def test_the_archive_pass_reruns_weekly(env: dict[str, str], server: FixtureServer) -> None:
+    follow_rootblog(env, server)
+    poll(env, "--site", "rootblog")
+    set_archived(env, "2020-01-01T00:00:00Z")
+    server.reset_counts()
+    poll(env, "--site", "rootblog")
+    assert "/rootblog/sitemap.xml" in {path for _, path, _ in server.requests}
+    server.reset_counts()
+    poll(env, "--site", "rootblog")
+    assert "/rootblog/sitemap.xml" not in {path for _, path, _ in server.requests}
 
 
 def test_limit_caps_the_union_in_source_order(env: dict[str, str], server: FixtureServer) -> None:

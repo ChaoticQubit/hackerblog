@@ -199,6 +199,24 @@ def mark_backfilled(conn: sqlite3.Connection, site_id: int, now: str) -> None:
     assert cursor.rowcount == 1, "a site is backfilled once"
 
 
+def archived_at(conn: sqlite3.Connection, site_id: int) -> str | None:
+    """Return when the site's last archive pass (section 8.5) finished, or None if never."""
+    assert site_id > 0
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (f"archive_done:{site_id}",))
+    found = row.fetchone()
+    return None if found is None else str(found[0])
+
+
+def mark_archived(conn: sqlite3.Connection, site_id: int, now: str) -> None:
+    """Record in meta archive_done:<site_id> that an archive pass of the site finished now."""
+    assert site_id > 0
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?, ?) "
+        "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        (f"archive_done:{site_id}", now),
+    )
+
+
 def start_poll_run(conn: sqlite3.Connection, trigger: Trigger, now: str) -> int:
     """Insert a poll_runs row and return its id."""
     cursor = conn.execute(

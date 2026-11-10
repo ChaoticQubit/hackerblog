@@ -147,6 +147,17 @@ def known_urls(conn: sqlite3.Connection, urls: Iterable[str]) -> set[str]:
     return {row[0] for row in rows}
 
 
+def site_urls(conn: sqlite3.Connection, site_id: int, limit: int) -> list[str]:
+    """Return the canonical URLs of the site's newest stored posts, at most limit of them."""
+    assert limit >= 1
+    rows = conn.execute(
+        "SELECT canonical_url FROM posts WHERE site_id = ? ORDER BY id DESC LIMIT ?",
+        (site_id, limit),
+    ).fetchall()
+    assert len(rows) <= limit
+    return [row[0] for row in rows]
+
+
 def waiting_new(conn: sqlite3.Connection, site_id: int, limit: int) -> list[int]:
     """Return ids of new posts still waiting for a job, oldest discovery first."""
     assert limit >= 0

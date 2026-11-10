@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 from hackerblog.core import jobs, pipeline
+from hackerblog.core.config import Config, SiteConfig
 from hackerblog.core.discovery import service as discovery
 from hackerblog.core.errors import ExitCode, HackerBlogError
 from hackerblog.core.net.fetcher import Fetcher
@@ -178,39 +179,75 @@ async def backfill(
     dry_run: bool = False,
     wait: bool = False,
 ) -> Backfill:
-    """Discover the site, then re-queue its backfill_limit skips, newest first, up to limit.
+    """Run the site's archive pass, then re-queue its backfill_limit skips, newest first.
 
-    limit None means the site's backfill_limit, else no cap; already processed posts count
-    toward it. A dry run discovers without writing and queues nothing.
+    queued holds every post this queues: those discovery found and those re-queued, up to
+    limit (None means the site's backfill_limit, else no cap); already processed posts
+    count toward it. A dry run does all of it on a scratch copy, so it writes nothing.
     """
-    report = await discovery.poll(paths, [slug], dry_run=dry_run, wait=wait, sweep=True)
     config = discovery.load_valid_config(paths)
-    site = next(site for site in config.sites if site.slug == slug)
+    site = next((site for site in config.sites if site.slug == slug), None)
+    if dry_run:
+        conn = discovery.scratch_store(paths, config)
+        try:
+            return await _backfill(conn, config, site, slug, limit=limit, since=since, dry_run=True)
+        finally:
+            conn.close()
+    with discovery.poll_lock(paths, wait):
+        conn = discovery.open_store(paths, config)
+        try:
+            return await _backfill(
+                conn, config, site, slug, limit=limit, since=since, dry_run=False
+            )
+        finally:
+            conn.close()
+
+
+def _queued_ids(conn: sqlite3.Connection, slug: str) -> set[int]:
+    rows = conn.execute(
+        "SELECT p.id FROM posts p JOIN sites s ON s.id = p.site_id"
+        " WHERE s.slug = ? AND p.status = 'queued'",
+        (slug,),
+    ).fetchall()
+    return {int(row[0]) for row in rows}
+
+
+async def _backfill(
+    conn: sqlite3.Connection,
+    config: Config,
+    site: SiteConfig | None,
+    slug: str,
+    *,
+    limit: int | None,
+    since: str | None,
+    dry_run: bool,
+) -> Backfill:
+    before = _queued_ids(conn, slug)
+    report = await discovery.poll_store(conn, config, [slug], "cli", dry_run=dry_run, sweep=True)
+    assert site is not None
+    found = sorted(_queued_ids(conn, slug) - before)
     cap = limit
     if cap is None:
         cap = site.backfill_limit
     if cap is None:
         cap = config.defaults.backfill_limit
-    conn = discovery.open_store(paths, config)
-    try:
-        done = conn.execute(
-            "SELECT COUNT(*) FROM posts p JOIN sites s ON s.id = p.site_id"
-            " WHERE s.slug = ? AND p.status NOT IN ('discovered', 'skipped')",
-            (slug,),
-        ).fetchone()[0]
-        rows = conn.execute(
-            "SELECT p.id FROM posts p JOIN sites s ON s.id = p.site_id"
-            " WHERE s.slug = ? AND p.status = 'skipped' AND p.skip_reason = 'backfill_limit'"
-            " AND (? IS NULL OR p.published_at >= ?)"
-            " ORDER BY p.published_at DESC, p.id DESC",
-            (slug, since, since),
-        ).fetchall()
-        room = len(rows) if cap is None else max(0, cap - int(done))
-        chosen = [int(row[0]) for row in rows[:room]]
-        if not dry_run:
-            now = utc_now()
-            for post_id in chosen:
-                posts.queue_post(conn, post_id, now)
-    finally:
-        conn.close()
-    return Backfill(report, chosen, len(chosen) * TOKENS_PER_POST_ESTIMATE)
+    done = conn.execute(
+        "SELECT COUNT(*) FROM posts p JOIN sites s ON s.id = p.site_id"
+        " WHERE s.slug = ? AND p.status NOT IN ('discovered', 'skipped')",
+        (slug,),
+    ).fetchone()[0]
+    rows = conn.execute(
+        "SELECT p.id FROM posts p JOIN sites s ON s.id = p.site_id"
+        " WHERE s.slug = ? AND p.status = 'skipped' AND p.skip_reason = 'backfill_limit'"
+        " AND (? IS NULL OR p.published_at >= ?)"
+        " ORDER BY p.published_at DESC, p.id DESC",
+        (slug, since, since),
+    ).fetchall()
+    room = len(rows) if cap is None else max(0, cap - int(done))
+    chosen = [int(row[0]) for row in rows[:room]]
+    now = utc_now()
+    for post_id in chosen:
+        posts.queue_post(conn, post_id, now)
+    queued = found + chosen
+    assert len(set(queued)) == len(queued)
+    return Backfill(report, queued, len(queued) * TOKENS_PER_POST_ESTIMATE)

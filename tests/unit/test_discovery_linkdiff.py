@@ -93,3 +93,54 @@ def test_extract_links_drops_links_over_the_url_cap() -> None:
     long_href = "/posts/" + "a" * URL_LENGTH_MAX
     html = f'<a href="{long_href}">x</a><a href="/posts/short">y</a>'.encode()
     assert extract_links(html, "https://a.example/") == ["https://a.example/posts/short"]
+
+
+BEAR = "https://karpathy.bearblog.dev/blog/"
+BEAR_ROOTS = ("/",)
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://karpathy.bearblog.dev/verifiability/", True),
+        ("https://karpathy.bearblog.dev/the-append-and-review-note/", True),
+        ("https://karpathy.bearblog.dev/", False),
+        ("https://karpathy.bearblog.dev/blog/", False),
+        ("https://karpathy.bearblog.dev/blog/?q=pot-of-honey", False),
+        ("https://karpathy.bearblog.dev/feed/", False),
+        ("https://karpathy.bearblog.dev/feed/?type=rss", False),
+        ("https://karpathy.bearblog.dev/tag/machine-learning/", False),
+        ("https://karpathy.bearblog.dev/category/essays-and-notes/", False),
+        ("https://karpathy.bearblog.dev/now/", False),
+        ("https://bearblog.dev/a-long-enough-post-slug/", False),
+    ],
+)
+def test_post_roots_widen_the_heuristic_but_exclude_non_post_pages(
+    url: str, expected: bool
+) -> None:
+    assert is_post_url(url, BEAR, None, BEAR_ROOTS) is expected
+
+
+def test_posts_outside_the_site_path_need_a_root() -> None:
+    assert not is_post_url("https://karpathy.bearblog.dev/verifiability/", BEAR, None)
+
+
+@pytest.mark.parametrize("url", ["https://example.org/writing/", "https://example.org/"])
+def test_pattern_never_matches_the_site_page_or_home(url: str) -> None:
+    assert not is_post_url(url, WRITING, r"example\.org/")
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://shared.example/rootblog/", False),
+        ("https://shared.example/rootblog/now/", False),
+        ("https://shared.example/rootblog/tag/machine-learning/", False),
+        ("https://shared.example/rootblog/a-short-one/", False),
+        ("https://shared.example/rootblog/a-long-enough-slug/", True),
+        ("https://shared.example/other/a-long-enough-slug/", False),
+    ],
+)
+def test_depth_under_a_root_counts_from_the_root(url: str, expected: bool) -> None:
+    site = "https://shared.example/rootblog/blog/"
+    assert is_post_url(url, site, None, ("/rootblog/",)) is expected

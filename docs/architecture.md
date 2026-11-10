@@ -561,14 +561,16 @@ flowchart TD
     s1 -- no --> ld["method = linkdiff<br/>on the site url"]
 ```
 
-A feed is accepted only if feedparser finds at least one entry with a link. Sites with a feed and a sitemap keep both: the feed for new posts, the sitemap for backfill, because feeds usually carry only the latest 10 to 20 entries.
+A feed is accepted only if feedparser finds at least one entry with a link. Sites with a feed and a sitemap keep both: the feed for new posts, the sitemap and the index page for the archive pass (8.5), because feeds usually carry only the latest 10 to 20 entries.
 
 ### 8.3 Finding candidate posts
 
 - **Feed:** each entry gives `guid` (id or link), `url`, `title`, `author`, `published`, and `content` if present. Only entries whose host, ignoring a leading `www.`, is the site's host, a subdomain of it, or an entry in `allowed_hosts` are kept; the rest are dropped. Without this filter a hostile or aggregator feed could claim another followed site's post URLs, because `canonical_url` is unique across all sites (8.4).
 - **Sitemap:** follow sitemap indexes up to depth 2 and 50 child sitemaps; take `<loc>` and `<lastmod>`. Keep URLs on the site's host that match `post_url_pattern`, or, without a pattern, the post heuristic below.
 - **Link diff:** parse the index page, collect `<a href>` links, absolutise, keep same-host links that match the pattern or heuristic. New posts are links not seen in earlier snapshots (stored as posts, so the set of known URLs is the snapshot).
-- **Post heuristic** when no pattern is set: same host as the site; path under the site URL's path prefix, or containing a `/YYYY/` segment; path depth at least 2 or slug length at least 12; excludes paths with segments `tag`, `tags`, `category`, `categories`, `author`, `page`, `feed`, `search`, `about`, `contact`, and file extensions for images, archives, PDF, CSS and JS.
+- **Never a post**, with or without a pattern: the site URL's own page and the host's home page.
+- **Post roots:** the parent directories of the feed's entries on the site's exact host. A Bear blog followed at `/blog/` links its posts at `/<slug>/`, outside the site path, so the roots let the sitemap and index candidates through.
+- **Post heuristic** when no pattern is set: same host as the site; path under the site URL's path prefix, under a post root, or containing a `/YYYY/` segment; path depth at least 2 or slug length at least 12, with depth counted from the root when only a post root matched; excludes paths with segments `tag`, `tags`, `category`, `categories`, `author`, `page`, `feed`, `search`, `about`, `contact`, and file extensions for images, archives, PDF, CSS and JS.
 
 ### 8.4 Canonicalisation and dedup
 
@@ -582,9 +584,11 @@ Dedup order (misbehaving servers send a new ETag every time, so all three are ne
 
 ### 8.5 New versus backfill
 
-- A site's first successful discovery runs in **backfill mode**: every candidate is inserted with `origin = 'backfill'`. All of them get process jobs, newest first. Only when the site sets `backfill_limit` do the newest `backfill_limit` get jobs and the rest go in as `skipped` with reason `backfill_limit`. If the site has a sitemap, it is enumerated too so older posts are known. No per-post notifications; once M3 lands, one `backfill.completed` event when the last backfill job finishes.
+- A site's first successful discovery runs in **backfill mode**: every candidate is inserted with `origin = 'backfill'`. All of them get process jobs, newest first. Only when the site sets `backfill_limit` do the newest `backfill_limit` get jobs and the rest go in as `skipped` with reason `backfill_limit`. It is an **archive pass**: candidates from the feed, the sitemap (if any) and the index-page link diff are unioned and deduped by canonical URL, keeping the feed's copy, so a feed truncated to the newest entries still yields the whole archive. No per-post notifications; once M3 lands, one `backfill.completed` event when the last backfill job finishes.
+- Routine polls read only the site's method (feed, sitemap or link diff) for cost. A feed poll whose entries hold no post already stored triggers the archive pass too, because posts may have fallen out of the feed between polls; this needs no extra state and costs nothing while the feed overlaps the store.
+- A post outside the feed with a slug shorter than 12 characters at depth 1 under a post root (Bear's `/now/` page looks the same) is not found by the heuristic; set `post_url_pattern` for such sites.
 - After that, candidates not already known are `origin = 'new'`, capped at `max_new_per_poll` per poll (extra ones wait for the next poll), and produce notifications once M3 lands.
-- `hackerblog backfill SITE --limit N` moves the newest `N` posts that are `skipped` with reason `backfill_limit` back to `queued`.
+- `hackerblog backfill SITE --limit N` first runs the archive pass with unconditional requests, so a sitemap or index answering 304 cannot hide posts an earlier discovery missed; those come in as `origin = 'new'`. It then moves the newest `N` posts that are `skipped` with reason `backfill_limit` back to `queued`.
 - `hackerblog process URL` inserts `origin = 'manual'` (notified instantly once M3 lands) and works for URLs outside followed sites (site `adhoc`).
 
 ## 9. Post lifecycle

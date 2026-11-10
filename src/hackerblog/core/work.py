@@ -183,7 +183,7 @@ async def backfill(
     limit None means the site's backfill_limit, else no cap; already processed posts count
     toward it. A dry run discovers without writing and queues nothing.
     """
-    report = await discovery.poll(paths, [slug], dry_run=dry_run, wait=wait)
+    report = await discovery.poll(paths, [slug], dry_run=dry_run, wait=wait, sweep=True)
     config = discovery.load_valid_config(paths)
     site = next(site for site in config.sites if site.slug == slug)
     cap = limit

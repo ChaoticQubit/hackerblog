@@ -235,3 +235,79 @@ def test_failed_first_sync_keeps_no_validators_so_the_retry_refetches(
     assert report["feedblog"]["first_sync"] is True
     assert ("GET", "/feedblog/feed.xml", 200) in server.requests
     assert stored_urls(env, "feedblog") == set(server.post_urls("feedblog"))
+
+
+def follow_rootblog(env: dict[str, str], server: FixtureServer) -> None:
+    config = Path(env["HACKERBLOG_HOME"]) / "sites.toml"
+    block = (
+        f'[[site]]\nurl = "{server.base_url}/rootblog/blog/"\nslug = "rootblog"\n'
+        f'sitemap = "{server.base_url}/rootblog/sitemap.xml"\n'
+    )
+    config.write_text(config.read_text(encoding="utf-8") + "\n" + block, encoding="utf-8")
+
+
+def test_first_poll_of_a_truncated_feed_stores_every_post(
+    env: dict[str, str], server: FixtureServer
+) -> None:
+    follow_rootblog(env, server)
+    report = by_slug(poll(env, "--site", "rootblog"))["rootblog"]
+    every = set(server.post_urls("rootblog"))
+    assert report["method"] == "feed"
+    assert report["first_sync"] is True
+    assert report["found"] == len(every) == report["new"]
+    assert stored_urls(env, "rootblog") == every
+
+
+def test_posts_that_fell_out_of_the_feed_between_polls_are_caught(
+    env: dict[str, str], server: FixtureServer
+) -> None:
+    follow_rootblog(env, server)
+    poll(env, "--site", "rootblog")
+    published = {
+        server.publish("rootblog", f"burst-of-new-posts-{index}", f"Burst {index}")
+        for index in range(4)
+    }
+    report = by_slug(poll(env, "--site", "rootblog"))["rootblog"]
+    assert report["new"] == 4, report
+    assert published <= stored_urls(env, "rootblog")
+    assert stored_urls(env, "rootblog") == set(server.post_urls("rootblog"))
+
+
+def test_backfill_finds_archive_posts_a_routine_poll_cannot_see(
+    env: dict[str, str], server: FixtureServer
+) -> None:
+    follow_rootblog(env, server)
+    poll(env, "--site", "rootblog")
+    lost = server.post_urls("rootblog")[:2]
+    with db(env) as conn:
+        ids = json.dumps(
+            [
+                row[0]
+                for row in conn.execute(
+                    "SELECT id FROM posts WHERE url IN (SELECT value FROM json_each(?))",
+                    (json.dumps(lost),),
+                )
+            ]
+        )
+        conn.execute("DELETE FROM jobs WHERE post_id IN (SELECT value FROM json_each(?))", (ids,))
+        conn.execute("DELETE FROM posts WHERE id IN (SELECT value FROM json_each(?))", (ids,))
+    assert not set(lost) & stored_urls(env, "rootblog")
+    routine = by_slug(poll(env, "--site", "rootblog"))["rootblog"]
+    assert routine["new"] == 0
+    code, out = invoke(env, "backfill", "rootblog", "--no-process", "--json")
+    assert code == 0, out
+    assert set(lost) <= stored_urls(env, "rootblog")
+
+
+def test_limit_caps_the_union_in_source_order(env: dict[str, str], server: FixtureServer) -> None:
+    follow_rootblog(env, server)
+    config = Path(env["HACKERBLOG_HOME"]) / "sites.toml"
+    config.write_text(config.read_text(encoding="utf-8") + "limit = 2\n", encoding="utf-8")
+    report = by_slug(poll(env, "--site", "rootblog"))["rootblog"]
+    newest_two = set(list(reversed(server.post_urls("rootblog")))[:2])
+    stored = stored_urls(env, "rootblog")
+    assert (report["queued"], report["skipped"]) == (2, len(stored) - 2), report
+    with db(env) as conn:
+        rows = conn.execute("SELECT url, status, skip_reason FROM posts").fetchall()
+    assert {url for url, status, _ in rows if status == "queued"} == newest_two
+    assert {url for url, _, reason in rows if reason == "over_limit"} == stored - newest_two

@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 from hackerblog.core.config import Defaults, SiteConfig
 from hackerblog.core.discovery.feeds import parse_feed
-from hackerblog.core.discovery.linkdiff import extract_links, is_post_url
+from hackerblog.core.discovery.linkdiff import extract_links, is_post_url, post_roots
 from hackerblog.core.discovery.model import URL_LENGTH_MAX, Candidate
 from hackerblog.core.discovery.resolve import resolve
 from hackerblog.core.discovery.sitemaps import parse_sitemap
@@ -88,15 +88,17 @@ async def discover_site(
     *,
     limits: Limits,
     now: str,
+    sweep: bool = False,
 ) -> SiteResult:
     """Run discovery for one site and record the poll result on the site.
 
-    Network and policy failures become a SiteResult with an error; anything else raises.
+    sweep forces the archive pass with unconditional requests, as `backfill` needs. Network
+    and policy failures become a SiteResult with an error; anything else raises.
     """
     assert row.slug == config.slug
     assert row.status == "active"
     try:
-        result = await _discover(conn, fetcher, row, config, limits=limits, now=now)
+        result = await _discover(conn, fetcher, row, config, limits=limits, now=now, sweep=sweep)
     except BlockedError as error:
         result = SiteResult(row.slug, row.discovery_method, error=error.message, blocked=True)
     except FetchError as error:
@@ -113,6 +115,7 @@ async def _discover(
     *,
     limits: Limits,
     now: str,
+    sweep: bool,
 ) -> SiteResult:
     if row.discovery_method is None or row.consecutive_failures >= RESOLVE_AFTER_FAILURES:
         found = await resolve(fetcher, config)
@@ -129,7 +132,15 @@ async def _discover(
         row = refreshed
     assert row.discovery_method is not None
     first_sync = row.backfilled_at is None
-    collected = await _collect(fetcher, row, first_sync, config.allowed_hosts, config.aggregator)
+    collected = await _collect(
+        conn,
+        fetcher,
+        row,
+        archive=first_sync or sweep,
+        sweep=sweep,
+        allowed=config.allowed_hosts,
+        aggregator=config.aggregator,
+    )
     blocked = set(await screen(fetcher, row, collected.candidates))
     with transaction(conn):
         if first_sync:
@@ -170,32 +181,53 @@ async def screen(fetcher: Fetcher, row: SiteRow, candidates: list[Candidate]) ->
 
 
 async def _collect(
+    conn: sqlite3.Connection,
     fetcher: Fetcher,
     row: SiteRow,
-    first_sync: bool,
-    allowed_hosts: Sequence[str],
+    *,
+    archive: bool,
+    sweep: bool,
+    allowed: Sequence[str],
     aggregator: bool,
 ) -> Collected:
-    """Fetch the site's sources conditionally and gather candidates.
+    """Fetch the site's sources and gather candidates, deduped by canonical URL.
 
-    A feed site also enumerates its sitemap on first sync, because feeds carry only the
-    latest entries and the archive must be found too.
+    A routine poll reads the site's one method. The archive pass (first sync, sweep, or a
+    feed holding no known post, so older ones may have fallen out of it) reads the feed,
+    the sitemap and the index page together, because feeds carry only the latest entries.
+    Aggregator sites never run it: their feed is the whole source and rarely repeats.
     """
     collected = Collected()
+    conditional = not sweep
     if row.discovery_method == "feed":
         assert row.feed_url is not None
         await _collect_feed(
-            fetcher, row, row.feed_url, collected, allowed_hosts, aggregator=aggregator
+            fetcher,
+            row,
+            row.feed_url,
+            collected,
+            allowed,
+            conditional=conditional,
+            aggregator=aggregator,
         )
-        if first_sync and row.sitemap_url:
-            await _collect_sitemap(fetcher, row, row.sitemap_url, collected)
-    elif row.discovery_method == "sitemap":
-        assert row.sitemap_url is not None
-        await _collect_sitemap(fetcher, row, row.sitemap_url, collected)
-    else:
-        assert row.discovery_method == "linkdiff"
-        await _collect_links(fetcher, row, collected)
+        archive = archive or _feed_gap(conn, collected.candidates)
+    archive = archive and not aggregator
+    roots = post_roots(row.url, [item.url for item in collected.candidates])
+    if row.sitemap_url and (archive or row.discovery_method == "sitemap"):
+        await _collect_sitemap(
+            fetcher, row, row.sitemap_url, collected, roots, conditional=conditional
+        )
+    if archive or row.discovery_method == "linkdiff":
+        await _collect_links(fetcher, row, collected, roots, conditional)
+    unique = {item.url: item for item in reversed(collected.candidates)}
+    collected.candidates = list(reversed(unique.values()))
+    assert len(collected.candidates) == len(unique)
     return collected
+
+
+def _feed_gap(conn: sqlite3.Connection, entries: list[Candidate]) -> bool:
+    """True when the feed lists posts but none is stored yet, so a gap may sit behind it."""
+    return bool(entries) and not posts.known_urls(conn, [item.url for item in entries])
 
 
 def _checked(url: str, status: int) -> None:
@@ -243,9 +275,10 @@ async def _collect_feed(
     collected: Collected,
     allowed_hosts: Sequence[str],
     *,
+    conditional: bool,
     aggregator: bool,
 ) -> None:
-    response = await fetcher.get(url, kind="feed", conditional=True)
+    response = await fetcher.get(url, kind="feed", conditional=conditional)
     _checked(url, response.status)
     collected.responses.append(response)
     collected.fetched += 1
@@ -258,7 +291,15 @@ async def _collect_feed(
     collected.candidates.extend(own_entries(row.url, entries, allowed_hosts, aggregator=aggregator))
 
 
-async def _collect_sitemap(fetcher: Fetcher, row: SiteRow, root: str, collected: Collected) -> None:
+async def _collect_sitemap(
+    fetcher: Fetcher,
+    row: SiteRow,
+    root: str,
+    collected: Collected,
+    roots: Sequence[str],
+    *,
+    conditional: bool,
+) -> None:
     """Walk a sitemap and its indexes breadth first, depth and child count bounded."""
     pending: list[tuple[str, int]] = [(root, 0)]
     visited: set[str] = set()
@@ -267,7 +308,7 @@ async def _collect_sitemap(fetcher: Fetcher, row: SiteRow, root: str, collected:
         if url in visited:
             continue
         visited.add(url)
-        response = await fetcher.get(url, kind="sitemap", conditional=True)
+        response = await fetcher.get(url, kind="sitemap", conditional=conditional)
         _checked(url, response.status)
         collected.responses.append(response)
         collected.fetched += 1
@@ -278,14 +319,19 @@ async def _collect_sitemap(fetcher: Fetcher, row: SiteRow, root: str, collected:
             parsed = parse_sitemap(response.body)
         except ValueError as error:
             raise FetchError(f"{url} is not a valid sitemap: {error}") from error
-        collected.candidates.extend(post_candidates(row, parsed.pages))
+        collected.candidates.extend(post_candidates(row, parsed.pages, roots))
         if depth < SITEMAP_DEPTH_MAX:
             pending.extend((child, depth + 1) for child in parsed.children)
     assert len(visited) <= SITEMAP_CHILDREN_MAX + 1
 
 
-def post_candidates(row: SiteRow, pages: list[tuple[str, str | None]]) -> list[Candidate]:
-    """Keep canonical same-host URLs that look like posts; unusable URLs are dropped."""
+def post_candidates(
+    row: SiteRow, pages: list[tuple[str, str | None]], roots: Sequence[str] = ()
+) -> list[Candidate]:
+    """Keep canonical same-host URLs that look like posts; unusable URLs are dropped.
+
+    roots are extra post directories from post_roots, passed on to is_post_url.
+    """
     host = urlsplit(row.url).hostname
     found: list[Candidate] = []
     for loc, lastmod in pages:
@@ -295,14 +341,18 @@ def post_candidates(row: SiteRow, pages: list[tuple[str, str | None]]) -> list[C
             url = canonicalize(loc)
         except ValueError:
             continue
-        if urlsplit(url).hostname == host and is_post_url(url, row.url, row.post_url_pattern):
+        if urlsplit(url).hostname == host and is_post_url(
+            url, row.url, row.post_url_pattern, roots
+        ):
             found.append(Candidate(url=url, guid=url, published_at=lastmod, source_url=loc))
     assert len(found) <= len(pages)
     return found
 
 
-async def _collect_links(fetcher: Fetcher, row: SiteRow, collected: Collected) -> None:
-    response = await fetcher.get(row.url, kind="page", conditional=True)
+async def _collect_links(
+    fetcher: Fetcher, row: SiteRow, collected: Collected, roots: Sequence[str], conditional: bool
+) -> None:
+    response = await fetcher.get(row.url, kind="page", conditional=conditional)
     _checked(row.url, response.status)
     collected.responses.append(response)
     collected.fetched += 1
@@ -311,7 +361,7 @@ async def _collect_links(fetcher: Fetcher, row: SiteRow, collected: Collected) -
         return
     links = extract_links(response.body, response.url)
     pages: list[tuple[str, str | None]] = [(link, None) for link in links]
-    collected.candidates.extend(post_candidates(row, pages))
+    collected.candidates.extend(post_candidates(row, pages, roots))
 
 
 def _newest_first(candidates: list[Candidate]) -> list[Candidate]:

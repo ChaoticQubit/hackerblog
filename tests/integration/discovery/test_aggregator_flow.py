@@ -117,3 +117,25 @@ def test_aggregator_feed_with_limit_queues_the_top_ranks_and_skips_the_rest(
     stored = posts_by_status(env)
     assert stored[("queued", None)] == {story(rank) for rank in [*range(1, 11), *fresh]}
     assert stored[("skipped", "over_limit")] == {story(rank) for rank in range(11, 31)}
+
+
+def test_aggregator_never_runs_the_archive_pass(env: dict[str, str], server: FixtureServer) -> None:
+    index_only = f"{server.base_url}/agg/2026/an-index-only-post-slug/"
+    page = f'<!doctype html><html><body><a href="{index_only}">x</a></body></html>'
+    sitemap = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        f"<url><loc>{index_only}</loc></url></urlset>\n"
+    )
+    server.host({"/agg/": (page, "text/html"), "/agg/sitemap.xml": (sitemap, "application/xml")})
+    config = Path(env["HACKERBLOG_HOME"]) / "sites.toml"
+    extra = f'sitemap = "{server.base_url}/agg/sitemap.xml"\n'
+    config.write_text(config.read_text(encoding="utf-8") + extra, encoding="utf-8")
+    server.reset_counts()
+    poll(env)
+    server.host({FEED_PATH: (aggregator_feed(list(range(40, 45))), "application/rss+xml")})
+    second = poll(env)
+    assert second["new"] == 5, second
+    paths = {path for _, path, _ in server.requests}
+    assert not paths & {"/agg/", "/agg/sitemap.xml"}, paths
+    assert index_only not in set().union(*posts_by_status(env).values())

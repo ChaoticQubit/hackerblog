@@ -166,17 +166,21 @@ async def poll(
     dry_run: bool = False,
     wait: bool = False,
     trigger: Trigger = "cli",
+    sweep: bool = False,
 ) -> PollReport:
     """Discover new posts on the selected sites and queue them for processing.
 
-    A dry run works on an in-memory copy of the database with HTTP caches untouched, so it
-    writes nothing and takes no lock.
+    sweep runs every site's archive pass (section 8.5), as `backfill` does. A dry run works
+    on an in-memory copy of the database with HTTP caches untouched, so it writes nothing
+    and takes no lock.
     """
     config = load_valid_config(paths)
     if dry_run:
-        return await _poll(scratch_store(paths, config), config, slugs, trigger, dry_run=True)
+        store = scratch_store(paths, config)
+        return await _poll(store, config, slugs, trigger, dry_run=True, sweep=sweep)
     with poll_lock(paths, wait):
-        return await _poll(open_store(paths, config), config, slugs, trigger, dry_run=False)
+        store = open_store(paths, config)
+        return await _poll(store, config, slugs, trigger, dry_run=False, sweep=sweep)
 
 
 async def _poll(
@@ -186,6 +190,7 @@ async def _poll(
     trigger: Trigger,
     *,
     dry_run: bool,
+    sweep: bool,
 ) -> PollReport:
     try:
         targets = select_sites(conn, config, slugs)
@@ -201,6 +206,7 @@ async def _poll(
                         site,
                         limits=Limits.of(site, config.defaults),
                         now=utc_now(),
+                        sweep=sweep,
                     )
                 )
                 for row, site in targets

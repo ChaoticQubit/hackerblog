@@ -1,7 +1,10 @@
 """A real local HTTP server with three fixture blogs for discovery integration tests.
 
 feedblog has an RSS feed with the newest 3 posts and a sitemap with all of them, mapblog
-has only a sitemap index, plainblog has only an index page. Every site resource carries a
+has only a sitemap index, plainblog has only an index page. rootblog is shaped like a Bear
+blog: its site URL is the /rootblog/blog/ index, its posts live one level up at
+/rootblog/<slug>/, its feed has only the newest 3 posts, and its index and sitemap list
+every post next to non-post pages. Every site resource carries a
 strong ETag and Last-Modified and answers conditional requests with 304.
 """
 
@@ -18,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import cast
 from urllib.parse import parse_qs, urlsplit
 
-SITES = ("feedblog", "mapblog", "plainblog")
+SITES = ("feedblog", "mapblog", "plainblog", "rootblog")
 BASE_TIME = datetime(2026, 1, 1, tzinfo=UTC)
 FEED_ITEMS_MAX = 3
 BIG_BODY_SIZE = 6 * 1024 * 1024
@@ -72,7 +75,23 @@ INITIAL_POSTS = {
         ("learning-rust-the-slow-way", "Learning Rust the slow way"),
         ("what-i-read-this-winter", "What I read this winter"),
     ],
+    "rootblog": [
+        ("the-append-and-review-note", "The append and review note"),
+        ("finding-the-best-sleep-tracker", "Finding the best sleep tracker"),
+        ("digital-hygiene-for-everyone", "Digital hygiene for everyone"),
+        ("power-to-the-people-essay", "Power to the people"),
+        ("verifiability-and-its-limits", "Verifiability and its limits"),
+        ("tiny-post", "Tiny post"),
+    ],
 }
+ROOT_NAV = (
+    "/rootblog/",
+    "/rootblog/now/",
+    "/rootblog/feed/",
+    "/rootblog/blog/?q=pot-of-honey",
+    "/rootblog/tag/machine-learning/",
+    "/rootblog/category/essays-and-notes/",
+)
 PLAIN_NAV = (
     "/plainblog/about/",
     "/plainblog/tags/",
@@ -110,6 +129,8 @@ def post_path(site: str, slug: str) -> str:
     assert slug and "/" not in slug, slug
     if site == "mapblog":
         return f"/mapblog/posts/{slug}/"
+    if site == "rootblog":
+        return f"/rootblog/{slug}/"
     return f"/{site}/2026/{slug}/"
 
 
@@ -150,17 +171,17 @@ def _urlset(entries: list[tuple[str, datetime | None]]) -> str:
     )
 
 
-def _rss(base_url: str, posts: list[Post]) -> str:
+def _rss(base_url: str, site: str, posts: list[Post]) -> str:
     items = "".join(
         f"<item><title>{escape(post.title)}</title>"
-        f"<link>{base_url}{post_path('feedblog', post.slug)}</link>"
-        f'<guid isPermaLink="true">{base_url}{post_path("feedblog", post.slug)}</guid>'
+        f"<link>{base_url}{post_path(site, post.slug)}</link>"
+        f'<guid isPermaLink="true">{base_url}{post_path(site, post.slug)}</guid>'
         f"<pubDate>{format_datetime(post.published, usegmt=True)}</pubDate></item>\n"
         for post in reversed(posts[-FEED_ITEMS_MAX:])
     )
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0"><channel>\n'
-        f"<title>Feed Blog</title><link>{base_url}/feedblog/</link>\n"
+        f"<title>{site}</title><link>{base_url}/{site}/</link>\n"
         f"<description>Fixture blog with a feed</description>\n{items}</channel></rss>\n"
     )
 
@@ -181,7 +202,7 @@ def _feedblog(base_url: str, posts: list[Post]) -> Pages:
     ]
     return {
         "/feedblog/": (home, HTML),
-        "/feedblog/feed.xml": (_rss(base_url, posts), RSS),
+        "/feedblog/feed.xml": (_rss(base_url, "feedblog", posts), RSS),
         "/feedblog/sitemap.xml": (_urlset(entries), XML),
     }
 
@@ -235,11 +256,43 @@ def _plainblog(base_url: str, posts: list[Post]) -> Pages:
     return pages
 
 
+def _rootblog(base_url: str, posts: list[Post]) -> Pages:
+    nav = " ".join(f'<a href="{href}">{escape(href)}</a>' for href in ROOT_NAV)
+    feed_link = (
+        '<link rel="alternate" type="application/rss+xml" title="RSS" href="/rootblog/feed/">\n'
+    )
+    index = _page(
+        base_url,
+        "/rootblog/blog/",
+        "Root Blog",
+        f"<nav>{nav}</nav>\n<h1>Blog</h1>\n{_link_list(base_url, 'rootblog', posts)}",
+        feed_link,
+    )
+    entries: list[tuple[str, datetime | None]] = [
+        (f"{base_url}/rootblog/", None),
+        (f"{base_url}/rootblog/now/", None),
+    ]
+    entries += [(f"{base_url}{post_path('rootblog', p.slug)}", None) for p in reversed(posts)]
+    pages: Pages = {
+        "/rootblog/blog/": (index, HTML),
+        "/rootblog/feed/": (_rss(base_url, "rootblog", posts), RSS),
+        "/rootblog/sitemap.xml": (_urlset(entries), XML),
+    }
+    for path in (ROOT_NAV[0], ROOT_NAV[1], ROOT_NAV[4], ROOT_NAV[5]):
+        pages[path] = (_page(base_url, path, path, f"<h1>{escape(path)}</h1>"), HTML)
+    return pages
+
+
 def build_site(base_url: str, site: str, posts: list[Post]) -> Pages:
     """Return every path of one fixture site mapped to (text body, content type)."""
     assert site in SITES, site
     assert posts, site
-    builders = {"feedblog": _feedblog, "mapblog": _mapblog, "plainblog": _plainblog}
+    builders = {
+        "feedblog": _feedblog,
+        "mapblog": _mapblog,
+        "plainblog": _plainblog,
+        "rootblog": _rootblog,
+    }
     pages = builders[site](base_url, posts)
     for post in posts:
         pages[post_path(site, post.slug)] = (_article(base_url, site, post), HTML)

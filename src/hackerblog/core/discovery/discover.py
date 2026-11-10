@@ -61,10 +61,11 @@ class SiteResult:
 
 @dataclass(frozen=True)
 class Limits:
-    """The per-site caps after [defaults] are applied."""
+    """The per-site caps after [defaults] are applied; limit is per site only, None is unset."""
 
     backfill_limit: int | None
     max_new_per_poll: int
+    limit: int | None = None
 
     @classmethod
     def of(cls, site: SiteConfig, defaults: Defaults) -> "Limits":
@@ -75,7 +76,8 @@ class Limits:
         per_poll = site.max_new_per_poll or defaults.max_new_per_poll
         assert backfill is None or backfill >= 0
         assert per_poll >= 1
-        return cls(backfill, per_poll)
+        assert site.limit is None or site.limit >= 1
+        return cls(backfill, per_poll, site.limit)
 
 
 async def discover_site(
@@ -127,7 +129,7 @@ async def _discover(
         row = refreshed
     assert row.discovery_method is not None
     first_sync = row.backfilled_at is None
-    collected = await _collect(fetcher, row, first_sync, config.allowed_hosts)
+    collected = await _collect(fetcher, row, first_sync, config.allowed_hosts, config.aggregator)
     blocked = set(await screen(fetcher, row, collected.candidates))
     with transaction(conn):
         if first_sync:
@@ -168,7 +170,11 @@ async def screen(fetcher: Fetcher, row: SiteRow, candidates: list[Candidate]) ->
 
 
 async def _collect(
-    fetcher: Fetcher, row: SiteRow, first_sync: bool, allowed_hosts: Sequence[str]
+    fetcher: Fetcher,
+    row: SiteRow,
+    first_sync: bool,
+    allowed_hosts: Sequence[str],
+    aggregator: bool,
 ) -> Collected:
     """Fetch the site's sources conditionally and gather candidates.
 
@@ -178,7 +184,9 @@ async def _collect(
     collected = Collected()
     if row.discovery_method == "feed":
         assert row.feed_url is not None
-        await _collect_feed(fetcher, row, row.feed_url, collected, allowed_hosts)
+        await _collect_feed(
+            fetcher, row, row.feed_url, collected, allowed_hosts, aggregator=aggregator
+        )
         if first_sync and row.sitemap_url:
             await _collect_sitemap(fetcher, row, row.sitemap_url, collected)
     elif row.discovery_method == "sitemap":
@@ -200,16 +208,23 @@ def _bare_host(url: str) -> str:
 
 
 def own_entries(
-    site_url: str, entries: list[Candidate], allowed_hosts: Sequence[str] = ()
+    site_url: str,
+    entries: list[Candidate],
+    allowed_hosts: Sequence[str] = (),
+    *,
+    aggregator: bool = False,
 ) -> list[Candidate]:
     """Keep feed entries on the site's host, its subdomains, or an allowed_hosts entry.
 
     canonical_url is unique across sites, so an entry on an unrelated host could claim a
     post of another followed site or queue arbitrary third-party pages. Sibling hosts
-    need allowed_hosts, since telling them apart needs the public suffix list.
+    need allowed_hosts, since telling them apart needs the public suffix list. An
+    aggregator site (section 19, T15) keeps every entry; fetches stay guarded.
     """
     host = _bare_host(site_url)
     assert host
+    if aggregator:
+        return list(entries)
     allowed = {name.lower() for name in allowed_hosts}
 
     def own(url: str) -> bool:
@@ -227,6 +242,8 @@ async def _collect_feed(
     url: str,
     collected: Collected,
     allowed_hosts: Sequence[str],
+    *,
+    aggregator: bool,
 ) -> None:
     response = await fetcher.get(url, kind="feed", conditional=True)
     _checked(url, response.status)
@@ -238,7 +255,7 @@ async def _collect_feed(
     entries = parse_feed(response.body, response.url)
     if entries is None:
         raise FetchError(f"{url} is no longer a feed with entries", status=response.status)
-    collected.candidates.extend(own_entries(row.url, entries, allowed_hosts))
+    collected.candidates.extend(own_entries(row.url, entries, allowed_hosts, aggregator=aggregator))
 
 
 async def _collect_sitemap(fetcher: Fetcher, row: SiteRow, root: str, collected: Collected) -> None:
@@ -317,15 +334,25 @@ def store_backfill(
     limits: Limits,
     now: str,
 ) -> tuple[int, int, int]:
-    """Insert every candidate as backfill; queue the newest backfill_limit, skip the rest."""
-    new = queued = skipped = 0
-    for item in _newest_first(candidates):
+    """Insert every candidate as backfill; queue the newest backfill_limit, skip the rest.
+
+    With a site limit, candidates keep source order and only the first limit unblocked
+    ones may be queued; the others are skipped as over_limit, which nothing re-queues.
+    """
+    new = queued = skipped = taken = 0
+    ordered = candidates if limits.limit is not None else _newest_first(candidates)
+    for item in ordered:
         post_id = posts.insert_post(conn, site_id, item, "backfill", now)
         if post_id is None:
             continue
         new += 1
         if item.url in blocked:
             posts.skip_post(conn, post_id, "robots", now)
+            skipped += 1
+            continue
+        taken += 1
+        if limits.limit is not None and taken > limits.limit:
+            posts.skip_post(conn, post_id, "over_limit", now)
             skipped += 1
         elif limits.backfill_limit is None or queued < limits.backfill_limit:
             posts.queue_post(conn, post_id, now)
@@ -334,6 +361,7 @@ def store_backfill(
             posts.skip_post(conn, post_id, "backfill_limit", now)
             skipped += 1
     assert queued + skipped == new
+    assert limits.limit is None or queued <= limits.limit
     return new, queued, skipped
 
 
@@ -349,8 +377,11 @@ def store_new(
     """Insert unseen candidates as new, then queue up to max_new_per_poll waiting ones.
 
     Posts over the cap stay `discovered` and are queued by a later poll, so a 304 on the
-    next poll cannot lose them.
+    next poll cannot lose them. A site limit replaces that: the first limit unseen,
+    unblocked candidates in source order are queued and the rest skipped as over_limit.
     """
+    if limits.limit is not None:
+        return _store_new_limited(conn, site_id, candidates, blocked, limit=limits.limit, now=now)
     new = skipped = 0
     for item in reversed(_newest_first(candidates)):
         post_id = posts.insert_post(conn, site_id, item, "new", now)
@@ -365,3 +396,30 @@ def store_new(
         posts.queue_post(conn, post_id, now)
     assert len(waiting) <= limits.max_new_per_poll
     return new, len(waiting), skipped
+
+
+def _store_new_limited(
+    conn: sqlite3.Connection,
+    site_id: int,
+    candidates: list[Candidate],
+    blocked: set[str],
+    *,
+    limit: int,
+    now: str,
+) -> tuple[int, int, int]:
+    new = queued = skipped = 0
+    for item in candidates:
+        post_id = posts.insert_post(conn, site_id, item, "new", now)
+        if post_id is None:
+            continue
+        new += 1
+        reason = "robots" if item.url in blocked else "over_limit" if queued >= limit else None
+        if reason is None:
+            posts.queue_post(conn, post_id, now)
+            queued += 1
+        else:
+            posts.skip_post(conn, post_id, reason, now)
+            skipped += 1
+    assert queued + skipped == new
+    assert queued <= limit
+    return new, queued, skipped

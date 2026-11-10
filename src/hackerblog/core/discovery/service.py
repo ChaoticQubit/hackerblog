@@ -4,6 +4,7 @@ import asyncio
 import fcntl
 import json
 import os
+import re
 import sqlite3
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
@@ -25,7 +26,9 @@ from hackerblog.core.store import posts, sites
 from hackerblog.core.store.migrate import connect, migrate
 from hackerblog.core.store.sites import SiteRow, Trigger, utc_now
 
-WEEKLY_MIN_AGE = timedelta(days=6)
+SITE_HEADER = re.compile(r"^\s*\[\[site\]\]\s*(#.*)?$")
+TABLE_HEADER = re.compile(r"^\s*\[")
+MIN_AGE = {"weekly": timedelta(days=6), "monthly": timedelta(days=27)}
 OPML_BYTES_MAX = 5 * 1024 * 1024
 
 
@@ -117,11 +120,11 @@ def _by_slug(config: Config) -> dict[str, SiteConfig]:
     return found
 
 
-def _recently_polled(row: SiteRow, now: datetime) -> bool:
+def _recently_polled(row: SiteRow, now: datetime, min_age: timedelta) -> bool:
     if row.last_success_at is None:
         return False
     last = datetime.strptime(row.last_success_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
-    return now - last < WEEKLY_MIN_AGE
+    return now - last < min_age
 
 
 def select_sites(
@@ -130,7 +133,8 @@ def select_sites(
     """Pick the sites to poll: the named ones, or every enabled site that is due.
 
     Named sites must exist and be enabled. Without names, weekly sites polled successfully
-    in the last 6 days are left out (section 17, external mode).
+    in the last 6 days and monthly sites in the last 27 days are left out (section 17,
+    external mode).
     """
     configured = _by_slug(config)
     for slug in slugs:
@@ -144,7 +148,8 @@ def select_sites(
         if slugs and row.slug not in slugs:
             continue
         schedule = site.schedule or config.defaults.schedule
-        if not slugs and schedule == "weekly" and _recently_polled(row, now):
+        min_age = MIN_AGE.get(schedule)
+        if not slugs and min_age is not None and _recently_polled(row, now, min_age):
             continue
         chosen.append((row, site))
     missing = set(slugs) - {row.slug for row, _ in chosen}
@@ -263,6 +268,9 @@ class NewSite:
     feed: str | None = None
     notify: str | None = None
     backfill_limit: int | None = None
+    schedule: str | None = None
+    limit: int | None = None
+    aggregator: bool = False
 
 
 @dataclass(frozen=True)
@@ -368,6 +376,9 @@ async def add_site(paths: Paths, spec: NewSite, discover: bool) -> Added:
         "tags": list(spec.tags),
         "notify": spec.notify,
         "backfill_limit": spec.backfill_limit,
+        "schedule": spec.schedule,
+        "limit": spec.limit,
+        "aggregator": spec.aggregator or None,
     }
     site = _validated(config, _present(values))
     resolution: Resolution | None = None
@@ -383,6 +394,65 @@ async def add_site(paths: Paths, spec: NewSite, discover: bool) -> Added:
     stored = next(item for item in appended.sites if _site_key(item.url) == _site_key(site.url))
     assert stored.slug == site.slug
     return Added(stored, resolution)
+
+
+def _edited_lines(lines: list[str], index: int, changes: dict[str, object | None]) -> list[str]:
+    """Set or remove keys in the index-th [[site]] table of lines, leaving other lines as is."""
+    headers = [i for i, line in enumerate(lines) if SITE_HEADER.match(line)]
+    if index >= len(headers):
+        hint = "Write each site as a [[site]] table"
+        raise HackerBlogError(ExitCode.CONFIG, "cannot find the site's [[site]] table", hint)
+    start = headers[index]
+    end = next(
+        (i for i in range(start + 1, len(lines)) if TABLE_HEADER.match(lines[i])), len(lines)
+    )
+    block = lines[start:end]
+    for key, value in changes.items():
+        key_re = re.compile(rf"^\s*{re.escape(key)}\s*=")
+        at = next((i for i, line in enumerate(block) if key_re.match(line)), None)
+        line = None if value is None else f"{key} = {toml_value(value)}\n"
+        if at is not None:
+            block[at : at + 1] = [] if line is None else [line]
+        elif line is not None:
+            body = [
+                i
+                for i, text in enumerate(block)
+                if text.strip() and not text.lstrip().startswith("#")
+            ]
+            block.insert(body[-1] + 1, line)
+    assert block and SITE_HEADER.match(block[0])
+    return [*lines[:start], *block, *lines[end:]]
+
+
+def edit_site(paths: Paths, slug: str, changes: dict[str, object | None]) -> SiteConfig:
+    """Set (or, for None, remove) keys of one [[site]] table in sites.toml in place.
+
+    Only the changed key lines are rewritten. The previous bytes are restored when the
+    file no longer validates or another site changed, so a bad edit never sticks.
+    """
+    assert changes
+    config = load_valid_config(paths)
+    index = next((i for i, site in enumerate(config.sites) if site.slug == slug), None)
+    if index is None:
+        hint = "Try: hackerblog sites list --all"
+        raise HackerBlogError(ExitCode.NOT_FOUND, f"no site named {slug!r}", hint)
+    before = paths.config.read_bytes()
+    lines = before.decode("utf-8").splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    paths.config.write_bytes("".join(_edited_lines(lines, index, changes)).encode("utf-8"))
+    edited, problems = load_config(paths.config)
+    if edited is None:
+        paths.config.write_bytes(before)
+        first = problems[0].render(paths.config.name)
+        raise HackerBlogError(ExitCode.CONFIG, f"the edit is invalid: {first}", "")
+    others = [site for i, site in enumerate(config.sites) if i != index]
+    if [site for i, site in enumerate(edited.sites) if i != index] != others:
+        paths.config.write_bytes(before)
+        raise HackerBlogError(ExitCode.CONFIG, "the edit would change another site", "")
+    site = edited.sites[index]
+    assert site.slug == slug
+    return site
 
 
 @dataclass(frozen=True)

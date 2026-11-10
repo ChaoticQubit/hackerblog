@@ -9,7 +9,15 @@ from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from hackerblog.core.net.urls import url_policy_problem
 
@@ -23,7 +31,7 @@ EXAMPLE_MODELS = {
     "openai_compatible": "<model id served at base_url>",
 }
 MODEL_HINT = "Add under [llm]: "
-SCHEDULE_WORDS = frozenset({"hourly", "daily", "weekly"})
+SCHEDULE_WORDS = frozenset({"hourly", "daily", "weekly", "monthly"})
 CRON_RANGES = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))
 CRON_FIELD = re.compile(r"^(\*|(\d+)(?:-(\d+))?)(?:/(\d+))?$")
 HOST_NAME = re.compile(
@@ -75,7 +83,9 @@ def _check_schedule(value: str) -> str:
         return value
     problem = validate_cron(value)
     if problem:
-        raise ValueError(f"{problem}; use hourly, daily, weekly or a 5-field cron expression")
+        raise ValueError(
+            f"{problem}; use hourly, daily, weekly, monthly or a 5-field cron expression"
+        )
     return value
 
 
@@ -122,6 +132,8 @@ class SiteConfig(StrictModel):
     backfill_limit: int | None = Field(default=None, ge=0)
     notify: Notify | None = None
     max_new_per_poll: int | None = Field(default=None, ge=1, le=200)
+    limit: int | None = Field(default=None, ge=1, le=200)
+    aggregator: StrictBool = False
     enabled: bool | None = None
 
     _pattern = field_validator("post_url_pattern")(_check_regex)

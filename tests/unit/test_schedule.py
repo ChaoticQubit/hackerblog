@@ -32,6 +32,7 @@ def test_site_cron_for_each_schedule_kind() -> None:
     hour, minute = divmod(7 * 60 + 30 + jitter, 60)
     assert site_cron("daily", "s", "08:00") == f"{minute} {hour % 24} * * *"
     assert site_cron("weekly", "s", "08:00") == f"{minute} {hour % 24} * * 1"
+    assert site_cron("monthly", "s", "08:00") == f"{minute} {hour % 24} 1 * *"
     assert site_cron("hourly", "s", "08:00") == f"{jitter} * * * *"
     assert site_cron("15 6 * * 1-5", "s", "08:00") == "15 6 * * 1-5"
 

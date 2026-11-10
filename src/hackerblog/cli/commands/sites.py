@@ -1,4 +1,4 @@
-"""`hackerblog sites`: list, show, add and import-opml (section 15.3)."""
+"""`hackerblog sites`: list, show, add, edit and import-opml (section 15.3)."""
 
 import asyncio
 from pathlib import Path
@@ -16,6 +16,14 @@ from hackerblog.core.errors import ExitCode, HackerBlogError
 app = typer.Typer(no_args_is_help=True, help="Followed blogs.")
 JsonFlag = Annotated[bool, typer.Option("--json", help="Print one JSON document.")]
 NotifyMode = Literal["instant", "digest", "off"]
+ScheduleOption = Annotated[
+    str | None,
+    typer.Option("--schedule", help="hourly, daily, weekly, monthly or a 5-field cron."),
+]
+LimitOption = Annotated[
+    int | None, typer.Option("--limit", min=1, max=200, help="Most posts taken per poll.")
+]
+BackfillOption = Annotated[int | None, typer.Option("--backfill-limit", min=0)]
 
 
 def _summary_json(summary: service.SiteSummary) -> dict[str, object]:
@@ -84,6 +92,8 @@ def show_site(ctx: typer.Context, slug: str, as_json: JsonFlag = False) -> None:
         **_summary_json(detail.summary),
         "backfill_limit": None if limits is None else limits.backfill_limit,
         "max_new_per_poll": None if limits is None else limits.max_new_per_poll,
+        "limit": None if detail.summary.config is None else detail.summary.config.limit,
+        "aggregator": detail.summary.config is not None and detail.summary.config.aggregator,
         "post_url_pattern": detail.summary.row.post_url_pattern,
         "robots": None if detail.robots is None else {"policy": detail.robots[0]},
         "http_cache": [
@@ -121,14 +131,21 @@ def add_site(
     tag: Annotated[list[str] | None, typer.Option("--tag", help="Repeatable.")] = None,
     feed: Annotated[str | None, typer.Option("--feed", help="Feed override.")] = None,
     notify: Annotated[NotifyMode | None, typer.Option("--notify")] = None,
-    backfill_limit: Annotated[int | None, typer.Option("--backfill-limit", min=0)] = None,
+    backfill_limit: BackfillOption = None,
+    schedule: ScheduleOption = None,
+    limit: LimitOption = None,
+    aggregator: Annotated[
+        bool, typer.Option("--aggregator", help="Allow feed entries on other hosts.")
+    ] = False,
     no_discover: Annotated[bool, typer.Option("--no-discover")] = False,
     poll: Annotated[bool, typer.Option("--poll", help="Poll the site right after.")] = False,
     as_json: JsonFlag = False,
 ) -> None:
     """Validate a blog URL, find its feed or sitemap, and append it to sites.toml."""
     state = get_state(ctx)
-    spec = service.NewSite(url, name, slug, tuple(tag or ()), feed, notify, backfill_limit)
+    spec = service.NewSite(
+        url, name, slug, tuple(tag or ()), feed, notify, backfill_limit, schedule, limit, aggregator
+    )
     try:
         added = asyncio.run(service.add_site(state.paths, spec, discover=not no_discover))
         report = None
@@ -163,6 +180,53 @@ def add_site(
             say(f"Next: hackerblog poll --site {site_slug}")
     if report is not None and report.code != ExitCode.OK:
         raise typer.Exit(int(report.code))
+
+
+@app.command("edit")
+def edit_site(
+    ctx: typer.Context,
+    slug: str,
+    schedule: ScheduleOption = None,
+    limit: LimitOption = None,
+    no_limit: Annotated[bool, typer.Option("--no-limit", help="Remove the limit.")] = False,
+    backfill_limit: BackfillOption = None,
+    notify: Annotated[NotifyMode | None, typer.Option("--notify")] = None,
+    aggregator: Annotated[
+        bool | None, typer.Option("--aggregator/--no-aggregator", show_default=False)
+    ] = None,
+    enabled: Annotated[bool | None, typer.Option("--enable/--disable", show_default=False)] = None,
+    as_json: JsonFlag = False,
+) -> None:
+    """Change one site's settings in sites.toml, keeping the rest of the file as is."""
+    state = get_state(ctx)
+    if no_limit and limit is not None:
+        fail(HackerBlogError(ExitCode.USAGE, "pass --limit or --no-limit, not both", ""), as_json)
+    changes: dict[str, object | None] = {
+        key: value
+        for key, value in {
+            "schedule": schedule,
+            "limit": limit,
+            "backfill_limit": backfill_limit,
+            "notify": notify,
+            "enabled": enabled,
+        }.items()
+        if value is not None
+    }
+    if no_limit:
+        changes["limit"] = None
+    if aggregator is not None:
+        changes["aggregator"] = True if aggregator else None
+    if not changes:
+        hint = "Pass at least one option, see: hackerblog sites edit --help"
+        fail(HackerBlogError(ExitCode.USAGE, "nothing to change", hint), as_json)
+    try:
+        site = service.edit_site(state.paths, slug, changes)
+    except HackerBlogError as error:
+        fail(error, as_json)
+    if as_json:
+        emit_json({"slug": slug, "changed": sorted(changes), "site": site.model_dump(mode="json")})
+        return
+    say(f"Updated site {slug} in {state.paths.config}: {', '.join(sorted(changes))}")
 
 
 def site_line(result: SiteResult) -> str:

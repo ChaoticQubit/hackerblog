@@ -241,3 +241,76 @@ def test_posts_list_shows_every_status_but_skipped_by_default(env: dict[str, str
     assert [post["status"] for post in data_of(out)] == ["skipped"]
     code, out = invoke(env, "posts", "list", "--status", "any", "--json")
     assert len(data_of(out)) == 5
+
+
+def test_add_writes_schedule_limit_and_aggregator(env: dict[str, str]) -> None:
+    args = ["--schedule", "monthly", "--limit", "10", "--aggregator"]
+    code, out = invoke(env, "sites", "add", "https://news.example/", "--no-discover", *args)
+    assert code == 0, out
+    assert sites_in(env) == [
+        {"url": "https://news.example/", "schedule": "monthly", "limit": 10, "aggregator": True}
+    ]
+    code, out = invoke(env, "sites", "show", "news-example", "--json")
+    assert code == 0, out
+    shown = data_of(out)
+    assert (shown["schedule"], shown["limit"], shown["aggregator"]) == ("monthly", 10, True)
+
+
+@pytest.mark.parametrize("bad", [["--schedule", "fortnightly"], ["--limit", "0"]])
+def test_add_rejects_bad_schedule_and_limit(env: dict[str, str], bad: list[str]) -> None:
+    code, out = invoke(env, "sites", "add", "https://news.example/", "--no-discover", *bad)
+    assert code in (2, 3), out
+    assert sites_in(env) == []
+
+
+EDITED = """
+# my blogs
+[[site]]
+url = "https://a.example/"
+name = "Alpha"  # keep me
+
+[[site]]
+url = "https://b.example/"
+limit = 3
+schedule = "hourly"
+
+# trailing note
+"""
+
+
+def test_edit_changes_one_site_in_place_and_keeps_the_rest(env: dict[str, str]) -> None:
+    path = config_path(env)
+    before = path.read_text(encoding="utf-8") + EDITED
+    path.write_text(before, encoding="utf-8")
+    args = ["--schedule", "weekly", "--limit", "20", "--backfill-limit", "0", "--disable"]
+    code, out = invoke(env, "sites", "edit", "b-example", *args)
+    assert code == 0, out
+    after = path.read_text(encoding="utf-8")
+    head, _, block = after.partition('url = "https://b.example/"\n')
+    assert head == before.partition('url = "https://b.example/"\n')[0]
+    assert block == (
+        'limit = 20\nschedule = "weekly"\nbackfill_limit = 0\nenabled = false\n\n# trailing note\n'
+    )
+    code, out = invoke(env, "sites", "edit", "b-example", "--no-limit", "--enable", "--aggregator")
+    assert code == 0, out
+    assert sites_in(env)[1] == {
+        "url": "https://b.example/",
+        "schedule": "weekly",
+        "backfill_limit": 0,
+        "enabled": True,
+        "aggregator": True,
+    }
+    assert sites_in(env)[0] == {"url": "https://a.example/", "name": "Alpha"}
+
+
+def test_edit_refuses_unknown_sites_and_bad_values(env: dict[str, str]) -> None:
+    assert invoke(env, "sites", "add", "https://a.example/", "--no-discover")[0] == 0
+    before = config_path(env).read_bytes()
+    code, out = invoke(env, "sites", "edit", "nope", "--limit", "5")
+    assert code == 4, out
+    code, out = invoke(env, "sites", "edit", "a-example", "--schedule", "61 * * * *")
+    assert code == 3, out
+    assert "schedule" in out
+    code, out = invoke(env, "sites", "edit", "a-example")
+    assert code == 2, out
+    assert config_path(env).read_bytes() == before

@@ -29,8 +29,8 @@ def jitter_minutes(slug: str) -> int:
 def site_cron(schedule: str, slug: str, digest_time: str) -> str:
     """Return the 5-field crontab expression for one site's schedule.
 
-    hourly runs at the slug's jitter minute; daily and weekly (Mondays) run at the poll
-    time plus jitter; any other value is already a validated cron expression.
+    hourly runs at the slug's jitter minute; daily, weekly (Mondays) and monthly (the 1st)
+    run at the poll time plus jitter; any other value is already a validated cron expression.
     """
     jitter = jitter_minutes(slug)
     if schedule == "hourly":
@@ -42,6 +42,8 @@ def site_cron(schedule: str, slug: str, digest_time: str) -> str:
         return f"{at} * * *"
     if schedule == "weekly":
         return f"{at} * * 1"
+    if schedule == "monthly":
+        return f"{at} 1 * *"
     assert len(schedule.split()) == 5, schedule
     return schedule
 

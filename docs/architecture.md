@@ -407,7 +407,7 @@ Top level:
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `schedule` | string | `"daily"` | `"hourly"`, `"daily"`, `"weekly"` or a 5-field cron expression. Daily runs at `notify.digest_time` minus 30 minutes, with a per-site jitter of 0 to 20 minutes derived from the slug. |
+| `schedule` | string | `"daily"` | `"hourly"`, `"daily"`, `"weekly"`, `"monthly"` or a 5-field cron expression. Daily runs at `notify.digest_time` minus 30 minutes, with a per-site jitter of 0 to 20 minutes derived from the slug; weekly runs then on Mondays and monthly on the 1st of the month. |
 | `backfill_limit` | int >= 0, or unset | unset (no cap) | How many existing posts to process on first sync, newest first. Unset processes the whole archive. `0` records existing posts as seen and processes only new ones. |
 | `notify` | `"instant"`, `"digest"`, `"off"` | `"digest"` | How Apprise reports this site's new posts. The webhook always receives every event. |
 | `max_new_per_poll` | int 1..200 | `20` | Cap on posts queued from one poll of one site, so a site that republishes its archive cannot flood the queue. |
@@ -425,6 +425,8 @@ Top level:
 | `post_url_pattern` | regex, max 200 chars | no | Only URLs matching it count as posts, for sitemap filtering and link diff. |
 | `allowed_hosts` | list of bare host names, at most 20 | no | Extra hosts whose feed entries count as this site's posts, for blogs that publish on a sibling host (site `example.com/blog`, posts on `example.net`). Lowercased and validated as host names; no scheme, port or path. The site's own host and its subdomains need no entry. |
 | `tags` | list of strings | no | Free labels, shown in lists and passed to the LLM as context. |
+| `limit` | int 1..200 | no | At most this many posts are taken per poll, in source order (feed order; for an aggregator such as Hacker News that is rank). The rest of that poll's new posts are recorded as skipped with reason `over_limit` and are never processed later. The first sync is capped at `limit` too, and at `backfill_limit` when that is lower. Unset keeps the default behaviour: whole-archive backfill and `max_new_per_poll` with carry-over. |
+| `aggregator` | bool, strict | no, default `false` | The site's feed links to posts on other hosts (Hacker News, Lobsters, a link blog), so off-host feed entries are kept for this site only. Sitemap and link-diff candidates stay same-host. Every fetch still passes the SSRF guard, robots and rate limits (section 19). Pair it with `limit`. |
 | plus any key from `[defaults]` | | no | Per-site override. |
 
 `[llm]`:
@@ -1319,11 +1321,28 @@ Detail for one site: config values after defaults, discovery method and URL, rob
 | `--feed URL` | none | Feed override. |
 | `--notify [instant\|digest\|off]` | inherit | |
 | `--backfill-limit INT` | inherit | |
+| `--schedule [hourly\|daily\|weekly\|monthly\|CRON]` | inherit | How often the site is polled (section 17). |
+| `--limit INT` | none | 1 to 200. At most this many posts per poll, in feed order; the rest are skipped `over_limit` (section 7.2). |
+| `--aggregator` | off | Keep feed entries on other hosts, for Hacker News style feeds (section 7.2). |
 | `--no-discover` | off | Skip the online discovery check. |
 | `--poll` | off | Run `poll --site SLUG` right after adding. |
 | `--json` | off | |
 
 Behaviour: validates the URL against the URL policy and SSRF guard (exit 9 if refused), rejects a duplicate URL or slug (exit 3), runs source resolution unless `--no-discover` and prints `Found feed: https://...` or `No feed; using sitemap` or `No feed or sitemap; using link diff, consider post_url_pattern`. Appends a `[[site]]` block to `sites.toml` as text (values written as TOML basic strings via JSON escaping), re-parses the whole file, and restores the previous bytes if validation fails. Comments and layout in the file are preserved because nothing else is rewritten.
+
+#### `hackerblog sites edit SLUG`
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--schedule [hourly\|daily\|weekly\|monthly\|CRON]` | unchanged | |
+| `--limit INT` / `--no-limit` | unchanged | Set the limit (1 to 200) or remove it. |
+| `--backfill-limit INT` | unchanged | |
+| `--notify [instant\|digest\|off]` | unchanged | |
+| `--aggregator` / `--no-aggregator` | unchanged | |
+| `--enable` / `--disable` | unchanged | Writes `enabled = true` or `enabled = false`. |
+| `--json` | off | |
+
+Behaviour: finds the site's `[[site]]` table in `sites.toml` and rewrites only the changed key lines; a new key goes after the table's last key line, `--no-limit` and `--no-aggregator` delete the line. Comments, layout and every other site stay byte for byte. The whole file is re-validated and the previous bytes are restored if it is invalid (exit 3) or if any other site would change. Exit 4 for an unknown slug, 2 when no option is given.
 
 #### `hackerblog sites import-opml FILE`
 
@@ -1655,7 +1674,9 @@ Overlap safety: `poll` and `backfill` take a non-blocking `fcntl.flock` on `$HAC
 
 `--kind cron` prints `30 7 * * * /Users/me/.local/bin/hackerblog poll >> /Users/me/.hackerblog/logs/poll.log 2>&1`. `--kind systemd` prints a `hackerblog-poll.service` (`Type=oneshot`, `ExecStart=... poll`) and a `hackerblog-poll.timer` (`OnCalendar=*-*-* 07:30:00`, `Persistent=true`).
 
-Per-site schedules apply only in `serve` mode. In external mode every enabled site is polled on each run; sites with `schedule = "weekly"` are skipped if their `last_success_at` is less than 6 days old, and `hourly` sites are polled once per run, so they behave as daily. `schedule show` prints this note under the generated file.
+Schedule words map to cron as follows, with the per-site jitter `J` of 0 to 20 minutes and the poll time `P` (`notify.digest_time` minus 30 minutes, plus `J`): `hourly` is `J * * * *`, `daily` is `P` every day, `weekly` is `P` on Mondays and `monthly` is `P` on the 1st of the month. Any other value is a validated 5-field cron expression used as is. Set them with `sites add --schedule` or `sites edit SLUG --schedule` (15.3).
+
+Per-site schedules apply only in `serve` mode. In external mode every enabled site is polled on each run; sites with `schedule = "weekly"` are skipped if their `last_success_at` is less than 6 days old, `schedule = "monthly"` sites if it is less than 27 days old, and `hourly` sites are polled once per run, so they behave as daily. `schedule show` prints this note under the generated file.
 
 ## 18. Secrets and runtime settings
 
@@ -1697,6 +1718,7 @@ Assets: the user's LLM API key and other secrets; the local file system and LAN 
 | T12 | Terminal escape injection | Post titles or LLM text printed by the CLI | Control and ANSI escape stripping in `cli/output.py`, Rich markup disabled | Unit |
 | T13 | Being a bad citizen, getting blocked | The agent itself | robots.txt, conditional GET, per-host delay, honest User-Agent, `Retry-After` | Integration: fixture server counts requests and asserts 304 on second poll |
 | T14 | A feed claiming another site's posts or queuing third-party pages | Hostile or aggregator feed entries | Feed entries kept only on the site's host, its subdomains or the per-site `allowed_hosts` list; sitemap and link-diff candidates must be on the site's host (8.3) | Unit: entries on an unrelated host are dropped, subdomains and `allowed_hosts` entries are kept |
+| T15 | An aggregator site queuing arbitrary third-party pages | The owner sets `aggregator = true` on a site such as Hacker News; its feed then names any host | The trust decision is per site and explicit in `sites.toml` (or `sites add --aggregator`); it relaxes only the T14 host filter for that site's feed entries, never for sitemaps or link diff and never for other sites. Every off-host URL is still fetched through the SSRF guard (T1), robots.txt (checked on every `Fetcher.get`), per-host delay and size caps (T8, T13), and an entry whose canonical URL another site already holds is not re-claimed. `limit` bounds how many entries one poll can queue | Integration: an aggregator fixture feed with 30 off-host entries and `limit = 10` queues exactly 10 and skips 20 as `over_limit`; unit: the same feed on a non-aggregator site keeps none |
 
 Residual risks, accepted for v1: a successful prompt injection can still mislead the reader about one post's content (mitigated by provenance links and the grounding check, not eliminated); lessons opened from disk run without the CSP `sandbox` directive, but have no network and no access to other files beyond what `file://` already allows a static page.
 

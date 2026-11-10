@@ -358,6 +358,12 @@ class FixtureServer:
         self._store(pages)
         return f"{self.base_url}{post_path(site, slug)}"
 
+    def host(self, pages: Pages) -> None:
+        """Serve extra documents, path to (text, content type); a changed text gets a new ETag."""
+        with self._lock:
+            self._generation += 1
+        self._store(pages)
+
     def _store(self, pages: Pages) -> None:
         with self._lock:
             modified = BASE_TIME + timedelta(hours=self._generation)

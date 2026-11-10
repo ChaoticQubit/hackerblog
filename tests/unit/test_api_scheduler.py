@@ -54,6 +54,14 @@ def test_weekly_fires_on_monday() -> None:
     assert (fire.hour, fire.minute) == (7, 0)
 
 
+def test_monthly_job_fires_on_the_first_before_digest() -> None:
+    scheduler = build_scheduler(config(schedule="monthly"), noop)
+    trigger = scheduler.get_job("poll:a-example-blog").trigger
+    fire = trigger.get_next_fire_time(None, datetime(2026, 11, 6, 12, 0, tzinfo=BERLIN))
+    assert (fire.year, fire.month, fire.day, fire.hour) == (2026, 12, 1, 7)
+    assert 30 <= fire.minute <= 50
+
+
 def test_one_job_per_enabled_site() -> None:
     scheduler = build_scheduler(config(), noop)
     ids = sorted(job.id for job in scheduler.get_jobs())

@@ -137,3 +137,54 @@ def test_allowed_hosts_must_be_host_names() -> None:
     for bad in ("https://b.example/", "b.example/path", "*.b.example", ""):
         with pytest.raises(ValueError, match="allowed_hosts"):
             SiteConfig(url="https://a.example/", allowed_hosts=[bad])
+
+
+def test_limit_is_a_site_setting_without_default() -> None:
+    site = SiteConfig(url="https://a.example/", limit=10)
+    assert Limits.of(site, Defaults()) == Limits(None, 20, 10)
+    assert Limits.of(SiteConfig(url="https://a.example/"), Defaults()).limit is None
+
+
+def test_backfill_with_limit_takes_source_order_and_skips_over_limit(
+    conn: sqlite3.Connection,
+) -> None:
+    row = site_row(conn)
+    candidates = [dated(4), dated(1), dated(3), dated(2), dated(5)]
+    with sites.transaction(conn):
+        counts = discover.store_backfill(
+            conn, row.id, candidates, {dated(4).url}, limits=Limits(1, 20, 2), now=NOW
+        )
+    assert counts == (5, 1, 4)
+    assert statuses(conn) == [
+        ("1/", "queued", None),
+        ("2/", "skipped", "over_limit"),
+        ("3/", "skipped", "backfill_limit"),
+        ("4/", "skipped", "robots"),
+        ("5/", "skipped", "over_limit"),
+    ]
+
+
+def test_new_posts_over_the_limit_are_skipped_not_carried_over(conn: sqlite3.Connection) -> None:
+    row = site_row(conn)
+    limits = Limits(None, 20, 2)
+    with sites.transaction(conn):
+        first = discover.store_new(
+            conn, row.id, [dated(3), dated(1), dated(2)], set(), limits=limits, now=NOW
+        )
+    assert first == (3, 2, 1)
+    with sites.transaction(conn):
+        second = discover.store_new(conn, row.id, [dated(4)], set(), limits=limits, now=NOW)
+    assert second == (1, 1, 0)
+    assert statuses(conn) == [
+        ("1/", "queued", None),
+        ("2/", "skipped", "over_limit"),
+        ("3/", "queued", None),
+        ("4/", "queued", None),
+    ]
+
+
+def test_aggregator_keeps_feed_entries_on_other_hosts() -> None:
+    urls = ["https://a.example/blog/one/", "https://b.example/two/", "https://c.example/three/"]
+    entries = [Candidate(url=url, guid=url) for url in urls]
+    assert discover.own_entries("https://a.example/blog/", entries) == entries[:1]
+    assert discover.own_entries("https://a.example/blog/", entries, aggregator=True) == entries

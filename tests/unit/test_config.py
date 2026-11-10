@@ -203,3 +203,25 @@ def test_derive_slug(url: str, slug: str) -> None:
 )
 def test_validate_cron(expr: str, ok: bool) -> None:
     assert (validate_cron(expr) is None) == ok
+
+
+def test_site_accepts_monthly_limit_and_aggregator(tmp_path: Path) -> None:
+    site = '\n[[site]]\nurl = "https://news.example/"\nschedule = "monthly"\nlimit = 10\n'
+    config, problems = load_config(
+        write(tmp_path, valid_text(tmp_path) + site + "aggregator = true\n")
+    )
+    assert problems == []
+    assert config is not None
+    assert (config.sites[2].schedule, config.sites[2].limit, config.sites[2].aggregator) == (
+        "monthly",
+        10,
+        True,
+    )
+    assert (config.sites[0].limit, config.sites[0].aggregator) == (None, False)
+
+
+@pytest.mark.parametrize("bad", ["limit = 0", "limit = 201", 'aggregator = "yes"'])
+def test_site_rejects_bad_limit_and_aggregator(tmp_path: Path, bad: str) -> None:
+    site = f'\n[[site]]\nurl = "https://news.example/"\n{bad}\n'
+    _, problems = load_config(write(tmp_path, valid_text(tmp_path) + site))
+    assert [p.location for p in problems] == [f"site[2].{bad.split(maxsplit=1)[0]}"]

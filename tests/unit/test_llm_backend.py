@@ -11,7 +11,12 @@ from pydantic import SecretStr
 from tests.samples import digest_data, lesson_data
 
 from hackerblog.core.errors import ExitCode, HackerBlogError
-from hackerblog.core.llm.agno_backend import answer, generate_digest, generate_lesson
+from hackerblog.core.llm.agno_backend import (
+    OUTPUT_TOKENS_MAX,
+    answer,
+    generate_digest,
+    generate_lesson,
+)
 from hackerblog.core.llm.schemas import InvalidModelOutputError, PostContext, PostDigest, Turn
 from hackerblog.core.llm.settings import LLMSettings
 
@@ -64,6 +69,21 @@ def ollama_chat(
         "done_reason": "stop",
         "prompt_eval_count": prompt_tokens,
         "eval_count": completion_tokens,
+    }
+
+
+def anthropic_message(
+    text: str, output_tokens: int = 50, stop_reason: str = "end_turn"
+) -> tuple[int, dict[str, Any]]:
+    return 200, {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "fake",
+        "content": [{"type": "text", "text": text}],
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {"input_tokens": 100, "output_tokens": output_tokens},
     }
 
 
@@ -296,8 +316,9 @@ def test_ollama_uses_the_native_chat_api_with_a_context_window_for_input_and_out
     assert provider.paths == ["/api/chat", "/api/chat"]
     first, second = (request["options"] for request in provider.requests)
     assert first["num_ctx"] == second["num_ctx"]
-    assert first["num_ctx"] >= settings.max_input_tokens + 4000 + 8000
-    assert (first["num_predict"], second["num_predict"]) == (4000, 8000)
+    limits = (OUTPUT_TOKENS_MAX["digest"], OUTPUT_TOKENS_MAX["lesson"])
+    assert first["num_ctx"] >= settings.max_input_tokens + sum(limits)
+    assert (first["num_predict"], second["num_predict"]) == limits
     assert provider.requests[0]["model"] == "fake-notes"
 
 
@@ -320,3 +341,53 @@ def test_rejected_output_reports_the_tokens_it_spent(provider: FakeProvider) -> 
     spent = caught.value.spent
     assert spent is not None
     assert (spent.model, spent.input_tokens, spent.output_tokens) == ("fake-notes", 24, 10)
+
+
+def anthropic_settings(provider: FakeProvider, monkeypatch: pytest.MonkeyPatch) -> LLMSettings:
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", provider.url.removesuffix("/v1"))
+    return replace(settings_for(provider), provider="anthropic", base_url=None)
+
+
+def test_anthropic_gets_the_schema_in_the_prompt_not_as_a_strict_grammar(
+    provider: FakeProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider.replies.append(anthropic_message(json.dumps(digest_data())))
+    provider.replies.append(anthropic_message(json.dumps(lesson_data())))
+    settings = anthropic_settings(provider, monkeypatch)
+    digest = asyncio.run(generate_digest(context(), settings))
+    lesson = asyncio.run(generate_lesson(context(), digest.value, settings))
+    assert provider.paths == ["/v1/messages", "/v1/messages"]
+    digest_request, lesson_request = provider.requests
+    for request in provider.requests:
+        assert "format" not in request.get("output_config", {})
+    assert "maxLength" in json.dumps(digest_request["system"])
+    assert "final_quiz" in json.dumps(lesson_request["system"])
+    assert len(lesson.value.final_quiz) == 4
+
+
+def test_anthropic_lesson_still_enforces_schema_bounds_after_the_call(
+    provider: FakeProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    too_long = lesson_data()
+    too_long["sections"][0]["heading"] = "h" * 101
+    provider.replies.append(anthropic_message(json.dumps(too_long)))
+    provider.replies.append(anthropic_message(json.dumps(too_long)))
+    digest = PostDigest.model_validate(digest_data())
+    settings = anthropic_settings(provider, monkeypatch)
+    with pytest.raises(InvalidModelOutputError, match=r"sections\.0\.heading"):
+        asyncio.run(generate_lesson(context(), digest, settings))
+
+
+def test_output_cut_at_the_token_limit_is_reported_as_truncation(provider: FakeProvider) -> None:
+    cut = json.dumps(digest_data())[:200]
+    limit = OUTPUT_TOKENS_MAX["digest"]
+    provider.replies.append(completion(cut, 10, limit))
+    provider.replies.append(completion(cut, 10, limit))
+    with pytest.raises(InvalidModelOutputError, match=f"cut off at the {limit}-token"):
+        asyncio.run(generate_digest(context(), settings_for(provider)))
+    assert f"cut off at the {limit}-token" in user_text(provider.requests[1])
+
+
+def test_output_limits_fit_long_posts() -> None:
+    assert OUTPUT_TOKENS_MAX["digest"] >= 12_000
+    assert OUTPUT_TOKENS_MAX["lesson"] >= 16_000

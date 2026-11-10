@@ -51,7 +51,7 @@ from hackerblog.core.store import repo
 
 Stage = Literal["all", "lesson", "render"]
 Status = Literal["ready", "skipped"]
-PROMPT_VERSIONS = {"digest": "digest.v1", "lesson": "lesson.v1"}
+PROMPT_VERSIONS = {"digest": "digest.v2", "lesson": "lesson.v1"}
 OUTPUT_TOKENS_MAX = {"digest": 4000, "lesson": 8000}
 WORDS_PER_MINUTE = 200
 HTTP_OK = 200

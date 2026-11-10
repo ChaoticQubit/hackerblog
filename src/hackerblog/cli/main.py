@@ -15,6 +15,7 @@ from typing import Annotated, Literal
 import typer
 
 from hackerblog import __version__
+from hackerblog.cli.commands import jobs as jobs_commands
 from hackerblog.cli.commands import posts as posts_commands
 from hackerblog.cli.commands import process, study
 from hackerblog.cli.commands import sites as sites_commands
@@ -388,6 +389,7 @@ def schedule_show(
 
 app.add_typer(sites_commands.app, name="sites")
 app.add_typer(posts_commands.app, name="posts")
+app.add_typer(jobs_commands.app, name="jobs")
 
 
 def _interrupted(signum: int, frame: object) -> None:

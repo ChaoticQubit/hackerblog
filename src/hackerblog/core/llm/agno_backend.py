@@ -48,11 +48,12 @@ type PromptStage = Literal["digest", "lesson", "ask"]
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 PROMPT_VERSIONS: Mapping[PromptStage, str] = {
-    "digest": "digest.v1",
+    "digest": "digest.v2",
     "lesson": "lesson.v1",
     "ask": "ask.v1",
 }
-OUTPUT_TOKENS_MAX: Mapping[PromptStage, int] = {"digest": 4000, "lesson": 8000, "ask": 2000}
+OUTPUT_TOKENS_MAX: Mapping[PromptStage, int] = {"digest": 12_000, "lesson": 16_000, "ask": 2000}
+NONSTREAMING_TOKENS_MAX = 21_333
 PROMPT_TOKENS_MAX = 8192
 GENERATION_ATTEMPTS = 2
 ASK_TOOL_CALLS_MAX = 8
@@ -127,6 +128,7 @@ def ollama_context(settings: LLMSettings) -> int:
 def _model(settings: LLMSettings, model_id: str, output_tokens_max: int) -> Model:
     key = settings.api_key.get_secret_value() if settings.api_key is not None else None
     timeout = float(settings.request_timeout_seconds)
+    assert 0 < output_tokens_max <= NONSTREAMING_TOKENS_MAX
     if settings.provider == "anthropic":
         assert key is not None
         return Claude(
@@ -288,6 +290,12 @@ def _agent(
     model_id: str,
     tools: Sequence[Callable[..., str]] = (),
 ) -> tuple[Agent, list[BaseException]]:
+    """Return the Agno agent of one stage and the list its provider errors are kept in.
+
+    Anthropic gets the output schema in the prompt instead of as a strict grammar: it refuses
+    LessonSpec's grammar as too large and drops every length bound from strict schemas.
+    _parse still enforces the full schema on the output.
+    """
     assert stage == "ask" or not tools
     model = _model(settings, model_id, OUTPUT_TOKENS_MAX[stage])
     errors = _record_errors(model)
@@ -295,6 +303,7 @@ def _agent(
         model=model,
         instructions=load_prompt(stage),
         output_schema=None if stage == "ask" else (PostDigest if stage == "digest" else LessonSpec),
+        use_json_mode=settings.provider == "anthropic",
         tools=list(tools),
         tool_call_limit=ASK_TOOL_CALLS_MAX,
         db=None,
@@ -329,6 +338,11 @@ async def _generate[T: BaseModel](
         used_in, used_out = _tokens(output)
         input_tokens, output_tokens = input_tokens + used_in, output_tokens + used_out
         parsed = _parse(output.content, schema)
+        if isinstance(parsed, str) and used_out >= OUTPUT_TOKENS_MAX[stage]:
+            parsed = (
+                f"output was cut off at the {OUTPUT_TOKENS_MAX[stage]}-token limit;"
+                " keep every field within its length limit"
+            )
         rejection = parsed if isinstance(parsed, str) else "; ".join(problems_of(parsed))
         if not isinstance(parsed, str) and not rejection:
             rejection = "; ".join(soft_problems_of(parsed))

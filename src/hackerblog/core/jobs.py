@@ -20,6 +20,7 @@ __all__ = [
     "release",
     "renew_lease",
     "retry",
+    "retry_all",
 ]
 
 MAX_ATTEMPTS = 5
@@ -226,6 +227,19 @@ def retry(conn: sqlite3.Connection, job_id: int, now: datetime) -> bool:
             set_post_status(conn, job.post_id, "queued")
     assert job.state in {"failed", "dead"}
     return True
+
+
+def retry_all(conn: sqlite3.Connection, now: datetime) -> list[int]:
+    """Retry every failed or dead job, as retry does one; return the retried ids in id order.
+
+    Skips a job whose post already has an open job.
+    """
+    rows = conn.execute(
+        "SELECT id FROM jobs WHERE state IN ('failed', 'dead') ORDER BY id"
+    ).fetchall()
+    retried = [int(job_id) for (job_id,) in rows if retry(conn, int(job_id), now)]
+    assert len(retried) <= len(rows)
+    return retried
 
 
 def cancel(conn: sqlite3.Connection, job_id: int, now: datetime) -> bool:

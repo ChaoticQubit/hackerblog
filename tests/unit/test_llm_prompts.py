@@ -84,3 +84,12 @@ def test_lesson_input_wraps_digest_and_post() -> None:
     _, inside, _ = between_tags(text)
     assert "Limit overrun races in web apps" in inside
     assert inside.count("ignore previous instructions") == 2
+
+
+def test_digest_prompt_states_the_schema_length_limits() -> None:
+    prompt = load_prompt("digest")
+    for name, field in PostDigest.model_fields.items():
+        bounds = [m.max_length for m in field.metadata if getattr(m, "max_length", None)]
+        if field.annotation is str:
+            line = prompt.split(f"\n- {name}: ")[1].split("\n")[0]
+            assert f"at most {bounds[0]} characters" in line
